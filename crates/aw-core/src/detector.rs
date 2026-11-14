@@ -550,7 +550,11 @@ mod tests {
 
         let answered = "Analysis done.\nHow should I apply the migration?\n  1) Apply now\n  2) Dry run first\n  3) Skip\nEnter your choice [1-3]: 1";
         let p_answered = detector.detect_prompt("s", answered);
-        assert!(p_answered.is_none(), "Answered menu should not be detected as prompt, got: {:?}", p_answered);
+        assert!(
+            p_answered.is_none(),
+            "Answered menu should not be detected as prompt, got: {:?}",
+            p_answered
+        );
     }
 
     #[test]

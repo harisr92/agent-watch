@@ -135,8 +135,7 @@ impl AppState {
 
             match detected {
                 Some(prompt)
-                    if active.last_resolved_prompt_text.as_deref()
-                        != Some(&prompt.prompt_text) =>
+                    if active.last_resolved_prompt_text.as_deref() != Some(&prompt.prompt_text) =>
                 {
                     active.last_resolved_prompt_text = None;
                     active.prompt_auto_detected = true;
