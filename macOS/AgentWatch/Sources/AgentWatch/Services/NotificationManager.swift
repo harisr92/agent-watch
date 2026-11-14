@@ -41,7 +41,23 @@ public class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
             options: []
         )
 
-        UNUserNotificationCenter.current().setNotificationCategories([promptCategory])
+        let replyAction = UNTextInputNotificationAction(
+            identifier: "REPLY_ACTION",
+            title: "Reply",
+            options: [],
+            textInputButtonTitle: "Send",
+            textInputPlaceholder: "Type your reply..."
+        )
+        let textCategory = UNNotificationCategory(
+            identifier: "AGENT_TEXT_PROMPT",
+            actions: [replyAction],
+            intentIdentifiers: [],
+            options: []
+        )
+
+        // Select, secret and acknowledge prompts have no inline actions: a menu can't fit in a
+        // notification and a secret shouldn't be typed into one. Clicking opens the popover.
+        UNUserNotificationCenter.current().setNotificationCategories([promptCategory, textCategory])
     }
 
     public func sendPromptNotification(session: AgentSession, prompt: PendingPrompt) {
@@ -57,7 +73,19 @@ public class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
         content.subtitle = "Folder: \(session.directoryName)"
         content.body = prompt.promptText
         content.sound = .default
-        content.categoryIdentifier = "AGENT_PROMPT"
+        switch prompt.promptType {
+        case .confirm:
+            content.categoryIdentifier = "AGENT_PROMPT"
+        case .text:
+            content.categoryIdentifier = "AGENT_TEXT_PROMPT"
+        case .select:
+            let labels = prompt.choices.prefix(4).map(\.label).joined(separator: " · ")
+            if !labels.isEmpty {
+                content.body = "\(prompt.promptText)\n\(labels)"
+            }
+        case .secret, .acknowledge:
+            break
+        }
         content.userInfo = [
             "session_id": session.id,
             "prompt_id": prompt.id
@@ -106,6 +134,12 @@ public class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
                 onInputResponse?(sessionId, "y")
             case "REJECT_ACTION":
                 onInputResponse?(sessionId, "n")
+            case "REPLY_ACTION":
+                if let reply = (response as? UNTextInputNotificationResponse)?.userText {
+                    onInputResponse?(sessionId, reply)
+                }
+            case UNNotificationDefaultActionIdentifier:
+                Task { @MainActor in StatusBarController.shared.showPopover() }
             default:
                 break
             }

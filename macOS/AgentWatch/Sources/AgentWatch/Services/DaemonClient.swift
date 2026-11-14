@@ -217,14 +217,14 @@ public class DaemonClient: ObservableObject {
         }
     }
 
-    public func submitInput(sessionId: String, input: String) {
+    public func submitInput(sessionId: String, input: String, pressEnter: Bool = true) {
         guard let url = URL(string: "\(apiBaseUrl)/api/v1/sessions/\(sessionId)/input") else { return }
 
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
 
-        let payload = UserInputPayload(input: input, pressEnter: true)
+        let payload = UserInputPayload(input: input, pressEnter: pressEnter)
         request.httpBody = try? JSONEncoder().encode(payload)
 
         // Optimistically update local state

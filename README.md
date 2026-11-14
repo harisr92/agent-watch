@@ -13,7 +13,7 @@ Whenever an agent requires user approval (e.g. running a bash command, file modi
 ## Features
 
 - **macOS Menu Bar Control**: Sits quietly in your menu bar. When any agent needs input, the icon pulses with an attention badge showing the exact number of agents waiting.
-- **1-Click Approvals & Responses**: Accept `[y/N]` prompts or type custom input directly inside the menu bar popover.
+- **Answer Any Kind of Question**: Approve/Reject for `[y/N]` prompts, one-click option buttons for numbered, lettered, inline (`(Y)es/(N)o/(A)ll`, `[y/n/a/q]`) and arrow-key menus, masked entry for passwords and API keys, a Continue button for "Press Enter" prompts, and a text field for everything else.
 - **Universal CLI Wrapper (`aw run`)**: Wrap any CLI command or agent without modifying a single line of code (`aw run claude`, `aw run aider`, `aw run agy`).
 - **Real-Time Output Streaming**: View live rolling terminal snippets of active agents with clean ANSI color support.
 - **Bidirectional Input**: Send input from either your physical terminal or the menu bar control seamlessly.
@@ -57,12 +57,23 @@ This generates:
 You can move `AgentWatch.app` to your Applications folder and symlink `aw` to your PATH:
 
 ```bash
-# Copy macOS App
-cp -r dist/AgentWatch.app /Applications/
+# Copy macOS App (remove the old copy first, see note below)
+rm -rf /Applications/AgentWatch.app
+cp -R dist/AgentWatch.app /Applications/
 
-# Install CLI binary
-cp target/release/aw /usr/local/bin/
+# Put the bundled CLI on your PATH (any directory on PATH works; ~/.local/bin needs no sudo)
+mkdir -p ~/.local/bin
+ln -sf /Applications/AgentWatch.app/Contents/MacOS/aw ~/.local/bin/aw
 ```
+
+The symlink follows the app, so reinstalling `AgentWatch.app` updates `aw` too. If `~/.local/bin`
+isn't on your PATH, add `export PATH="$HOME/.local/bin:$PATH"` to `~/.zshrc`.
+
+> **Always delete before re-copying.** Copying a new binary *over* an existing one makes macOS
+> keep the old file's cached code signature, and the kernel then kills the new binary on launch
+> (`zsh: killed aw ...`, exit code 137). Removing the old file first avoids this.
+> After updating, quit Agent Watch and stop any old daemon (`pkill -f "aw daemon"`) so the new
+> version is used.
 
 ### 3. Launch Agent Watch
 
@@ -111,6 +122,9 @@ alias agy="aw run agy"
 - `aw daemon`: Starts the background state daemon manually (auto-started by the macOS app if needed).
 - `aw list`: Lists all running and recent agent sessions with their status and prompts.
 - `aw ask "Prompt question"`: Prompts the user on the macOS menu bar and prints their response (great for shell scripts!).
+  - `aw ask "Deploy where?" -o staging -o production` shows option buttons and prints the chosen one.
+  - `aw ask "Pick a model" -o "Fast=haiku" -o "Smart=opus"` shows the label, prints the value after `=`.
+  - `aw ask "GitHub token" -t secret` asks with a masked field. Types: `confirm`, `select`, `text`, `secret`, `acknowledge`.
 - `aw input <session_id> <text>`: Injects text into a running agent session.
 
 ---
@@ -130,7 +144,7 @@ Agent Watch exposes a local MCP server endpoint at `http://127.0.0.1:45123/mcp`.
 ```
 
 Available MCP tools:
-- `request_user_input(prompt, options)`: Displays an urgent attention alert in the macOS menu bar and suspends until the user answers.
+- `request_user_input(prompt, prompt_type?, options?, choices?)`: Asks the user in the macOS menu bar and suspends until they answer. `options` is a list of strings shown as buttons; `choices` is a list of `{label, value}` when the returned value should differ from the label. `prompt_type` is one of `confirm`, `select`, `text`, `secret`, `acknowledge` (default: `select` when choices are given, otherwise `confirm`).
 - `report_status(message, session_name)`: Updates the status description shown in the menu bar popover.
 
 ---
@@ -148,3 +162,9 @@ Look up at your macOS Menu Bar:
 2. A native notification banner will appear.
 3. Click the menu bar icon to view the prompt and click **[Approve (y)]** or **[Reject (n)]**.
 4. The agent instantly receives your choice and completes!
+
+Simulate a multiple-choice question, a secret and a "Press Enter" prompt:
+
+```bash
+aw run python3 scripts/mock_menu_agent.py
+```

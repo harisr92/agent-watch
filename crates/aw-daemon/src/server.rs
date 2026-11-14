@@ -1,5 +1,7 @@
 use crate::state::AppState;
-use aw_core::models::{AgentSession, PromptType, RegisterSessionRequest, UserInputRequest};
+use aw_core::models::{
+    AgentSession, PromptChoice, PromptType, RegisterSessionRequest, UserInputRequest,
+};
 use axum::{
     extract::{
         ws::{Message, WebSocket, WebSocketUpgrade},
@@ -88,6 +90,46 @@ struct PromptPayload {
     prompt_text: String,
     prompt_type: Option<PromptType>,
     options: Option<Vec<String>>,
+    choices: Option<Vec<PromptChoice>>,
+}
+
+/// Resolves the prompt type and choices from loosely specified input.
+///
+/// - explicit `choices` (label + value) win over plain `options`
+/// - with no choices at all, the prompt defaults to a yes/no confirmation
+/// - with choices but no type, it is a Select (or Confirm when the choices are just y/n)
+pub(crate) fn resolve_prompt_shape(
+    prompt_type: Option<PromptType>,
+    options: Option<Vec<String>>,
+    choices: Option<Vec<PromptChoice>>,
+) -> (PromptType, Vec<PromptChoice>) {
+    let choices = choices
+        .filter(|c| !c.is_empty())
+        .or_else(|| {
+            options.filter(|o| !o.is_empty()).map(|o| {
+                o.into_iter()
+                    .map(|v| PromptChoice::new(v.clone(), v))
+                    .collect()
+            })
+        })
+        .unwrap_or_default();
+
+    let is_yes_no = |c: &[PromptChoice]| {
+        c.len() == 2 && c[0].value.eq_ignore_ascii_case("y") && c[1].value.eq_ignore_ascii_case("n")
+    };
+
+    match (prompt_type, choices.is_empty()) {
+        (Some(PromptType::Confirm), _) | (None, true) => (
+            PromptType::Confirm,
+            vec![PromptChoice::new("Yes", "y"), PromptChoice::new("No", "n")],
+        ),
+        (Some(t), _) => (t, choices),
+        (None, false) if is_yes_no(&choices) => (
+            PromptType::Confirm,
+            vec![PromptChoice::new("Yes", "y"), PromptChoice::new("No", "n")],
+        ),
+        (None, false) => (PromptType::Select, choices),
+    }
 }
 
 async fn register_prompt(
@@ -95,12 +137,10 @@ async fn register_prompt(
     Path(id): Path<String>,
     Json(payload): Json<PromptPayload>,
 ) -> Result<Json<Value>, StatusCode> {
-    let prompt_type = payload.prompt_type.unwrap_or(PromptType::Confirm);
-    let options = payload
-        .options
-        .unwrap_or_else(|| vec!["y".into(), "n".into()]);
+    let (prompt_type, choices) =
+        resolve_prompt_shape(payload.prompt_type, payload.options, payload.choices);
     match state
-        .register_prompt(&id, payload.prompt_text, prompt_type, options)
+        .register_prompt(&id, payload.prompt_text, prompt_type, choices)
         .await
     {
         Some(p) => Ok(Json(json!(p))),
@@ -174,12 +214,16 @@ async fn handle_ws(socket: WebSocket, state: AppState) {
                             val.get("session_id").and_then(|v| v.as_str()),
                             val.get("input").and_then(|v| v.as_str()),
                         ) {
+                            let press_enter = val
+                                .get("press_enter")
+                                .and_then(|v| v.as_bool())
+                                .unwrap_or(true);
                             state_clone
                                 .submit_input(
                                     sess_id,
                                     UserInputRequest {
                                         input: input.to_string(),
-                                        press_enter: true,
+                                        press_enter,
                                     },
                                 )
                                 .await;
@@ -209,13 +253,15 @@ async fn mcp_handler(State(state): State<AppState>, Json(payload): Json<Value>) 
                 "tools": [
                     {
                         "name": "request_user_input",
-                        "description": "Request approval or text input from the user via the macOS menu bar and desktop controls. Blocks until the user answers.",
+                        "description": "Ask the user a question via the macOS menu bar and block until they answer. Supports yes/no confirmations, multiple choice, free text, secrets and acknowledgements. Returns the chosen option's value or the typed text.",
                         "inputSchema": {
                             "type": "object",
                             "properties": {
-                                "prompt": { "type": "string", "description": "Question or confirmation prompt to display to the user" },
+                                "prompt": { "type": "string", "description": "Question to display to the user" },
                                 "session_name": { "type": "string", "description": "Optional name of the agent or task requesting input" },
-                                "options": { "type": "array", "items": { "type": "string" }, "description": "Optional choices, e.g. ['y', 'n']" }
+                                "prompt_type": { "type": "string", "enum": ["confirm", "select", "text", "secret", "acknowledge"], "description": "Kind of answer expected. Defaults to 'select' when options are given, otherwise 'confirm'." },
+                                "options": { "type": "array", "items": { "type": "string" }, "description": "Choices shown as buttons; the chosen string is returned. E.g. ['staging', 'production']" },
+                                "choices": { "type": "array", "items": { "type": "object", "properties": { "label": { "type": "string" }, "value": { "type": "string" } }, "required": ["label", "value"] }, "description": "Choices with a display label distinct from the returned value. Takes precedence over options." }
                             },
                             "required": ["prompt"]
                         }
@@ -265,8 +311,14 @@ async fn mcp_handler(State(state): State<AppState>, Json(payload): Json<Value>) 
                         arr.iter()
                             .filter_map(|v| v.as_str().map(|s| s.to_string()))
                             .collect()
-                    })
-                    .unwrap_or_else(|| vec!["y".to_string(), "n".to_string()]);
+                    });
+                let choices = arguments
+                    .get("choices")
+                    .and_then(|c| serde_json::from_value::<Vec<PromptChoice>>(c.clone()).ok());
+                let prompt_type = arguments
+                    .get("prompt_type")
+                    .and_then(|t| serde_json::from_value::<PromptType>(t.clone()).ok());
+                let (prompt_type, choices) = resolve_prompt_shape(prompt_type, options, choices);
 
                 let session_id = format!("mcp-{}", uuid::Uuid::new_v4());
                 let prompt_id = uuid::Uuid::new_v4().to_string();
@@ -295,11 +347,12 @@ async fn mcp_handler(State(state): State<AppState>, Json(payload): Json<Value>) 
                 }
 
                 let _ = state
-                    .register_prompt(
+                    .register_prompt_with_id(
                         &session_id,
+                        Some(prompt_id.clone()),
                         prompt_text.clone(),
-                        PromptType::Confirm,
-                        options,
+                        prompt_type,
+                        choices,
                     )
                     .await;
 

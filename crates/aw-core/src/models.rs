@@ -14,9 +14,27 @@ pub enum AgentStatus {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PromptType {
-    Confirm, // Yes/No, y/n
-    Text,    // Freeform text input
-    Select,  // Multiple choice selection
+    Confirm,     // Yes/No, y/n
+    Text,        // Freeform text input
+    Select,      // Pick one of several choices
+    Secret,      // Password / token entry (masked in the UI)
+    Acknowledge, // "Press Enter to continue"
+}
+
+/// One selectable answer: `label` is shown to the user, `value` is what gets sent to the agent.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PromptChoice {
+    pub label: String,
+    pub value: String,
+}
+
+impl PromptChoice {
+    pub fn new(label: impl Into<String>, value: impl Into<String>) -> Self {
+        Self {
+            label: label.into(),
+            value: value.into(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -25,8 +43,34 @@ pub struct PendingPrompt {
     pub session_id: String,
     pub prompt_text: String,
     pub prompt_type: PromptType,
+    /// Raw values of the choices (kept for older clients); see `choices` for labels.
     pub options: Vec<String>,
+    #[serde(default)]
+    pub choices: Vec<PromptChoice>,
+    /// Whether a chosen value must be followed by Enter. False for keypress-driven menus.
+    #[serde(default = "default_true")]
+    pub press_enter: bool,
     pub created_at: DateTime<Utc>,
+}
+
+impl PendingPrompt {
+    pub fn new(
+        session_id: &str,
+        prompt_text: impl Into<String>,
+        prompt_type: PromptType,
+        choices: Vec<PromptChoice>,
+    ) -> Self {
+        Self {
+            id: uuid::Uuid::new_v4().to_string(),
+            session_id: session_id.to_string(),
+            prompt_text: prompt_text.into(),
+            prompt_type,
+            options: choices.iter().map(|c| c.value.clone()).collect(),
+            choices,
+            press_enter: true,
+            created_at: Utc::now(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -58,6 +102,8 @@ pub enum AgentEvent {
         session_id: String,
         prompt_id: String,
         input: String,
+        #[serde(default = "default_true")]
+        press_enter: bool,
     },
     OutputDelta {
         session_id: String,

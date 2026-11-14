@@ -1,5 +1,5 @@
 use aw_core::models::{
-    AgentSession, AgentStatus, PromptType, RegisterSessionRequest, UserInputRequest,
+    AgentEvent, AgentSession, AgentStatus, PromptType, RegisterSessionRequest, UserInputRequest,
 };
 use aw_daemon::{create_router, AppState};
 use axum::{
@@ -200,4 +200,154 @@ async fn test_mcp_tools_list_and_report_status() {
     let body = resp.into_body().collect().await.unwrap().to_bytes();
     let val: Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(val["result"]["content"][0]["text"], "Status updated");
+}
+
+async fn post_json(app: &axum::Router, uri: &str, body: Value) -> (StatusCode, Value) {
+    let req = Request::builder()
+        .method("POST")
+        .uri(uri)
+        .header("Content-Type", "application/json")
+        .body(Body::from(serde_json::to_vec(&body).unwrap()))
+        .unwrap();
+    let resp = app.clone().oneshot(req).await.unwrap();
+    let status = resp.status();
+    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+    (
+        status,
+        serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+    )
+}
+
+#[tokio::test]
+async fn test_menu_prompt_exposes_choices_and_keeps_press_enter() {
+    let state = AppState::new();
+    let mut events = state.events_tx.subscribe();
+    let app = create_router(state.clone());
+
+    post_json(
+        &app,
+        "/api/v1/sessions/register",
+        json!({ "id": "menu", "name": "claude", "command": "claude", "args": [], "cwd": "/tmp", "pid": null }),
+    )
+    .await;
+    post_json(
+        &app,
+        "/api/v1/sessions/menu/output",
+        json!({ "chunk": "Do you want to make this edit?\n\u{276f} 1. Yes\n  2. Yes, allow all edits\n  3. No\n" }),
+    )
+    .await;
+
+    let session = state.get_session("menu").await.expect("session");
+    let prompt = session.pending_prompt.expect("prompt detected");
+    assert_eq!(prompt.prompt_type, PromptType::Select);
+    let labels: Vec<_> = prompt.choices.iter().map(|c| c.label.as_str()).collect();
+    assert_eq!(labels, vec!["Yes", "Yes, allow all edits", "No"]);
+    assert!(!prompt.press_enter);
+
+    let (status, _) = post_json(
+        &app,
+        "/api/v1/sessions/menu/input",
+        json!({ "input": "2", "press_enter": false }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    loop {
+        match events.recv().await.unwrap() {
+            AgentEvent::PromptResolved {
+                input, press_enter, ..
+            } => {
+                assert_eq!(input, "2");
+                assert!(!press_enter, "press_enter must reach the PTY runner");
+                break;
+            }
+            _ => continue,
+        }
+    }
+}
+
+#[tokio::test]
+async fn test_registered_prompt_with_options_is_select() {
+    let state = AppState::new();
+    let app = create_router(state.clone());
+    post_json(
+        &app,
+        "/api/v1/sessions/register",
+        json!({ "id": "s", "name": "n", "command": "c", "args": [], "cwd": "/tmp", "pid": null }),
+    )
+    .await;
+
+    let (_, p) = post_json(
+        &app,
+        "/api/v1/sessions/s/prompt",
+        json!({ "prompt_text": "Deploy where?", "options": ["staging", "production"] }),
+    )
+    .await;
+    assert_eq!(p["prompt_type"], "select");
+    assert_eq!(p["choices"][1]["label"], "production");
+
+    let (_, p) = post_json(
+        &app,
+        "/api/v1/sessions/s/prompt",
+        json!({ "prompt_text": "Ship it?" }),
+    )
+    .await;
+    assert_eq!(p["prompt_type"], "confirm");
+    assert_eq!(p["options"], json!(["y", "n"]));
+}
+
+#[tokio::test]
+async fn test_mcp_request_user_input_returns_chosen_option() {
+    let state = AppState::new();
+    let app = create_router(state.clone());
+
+    let call = json!({
+        "jsonrpc": "2.0",
+        "id": 7,
+        "method": "tools/call",
+        "params": {
+            "name": "request_user_input",
+            "arguments": {
+                "prompt": "Which environment?",
+                "choices": [
+                    { "label": "Staging", "value": "stg" },
+                    { "label": "Production", "value": "prod" }
+                ]
+            }
+        }
+    });
+    let app_clone = app.clone();
+    let pending = tokio::spawn(async move { post_json(&app_clone, "/mcp", call).await });
+
+    // Wait for the MCP session to show up, then answer it like the menu bar would.
+    let session = loop {
+        let waiting = state
+            .get_all_sessions()
+            .await
+            .into_iter()
+            .find(|s| s.pending_prompt.is_some());
+        if let Some(s) = waiting {
+            break s;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    };
+    let prompt = session.pending_prompt.unwrap();
+    assert_eq!(prompt.prompt_type, PromptType::Select);
+    assert_eq!(prompt.choices[1].label, "Production");
+
+    state
+        .submit_input(
+            &session.id,
+            UserInputRequest {
+                input: "prod".into(),
+                press_enter: true,
+            },
+        )
+        .await;
+
+    let (_, val) = tokio::time::timeout(std::time::Duration::from_secs(2), pending)
+        .await
+        .expect("MCP call should return once answered")
+        .unwrap();
+    assert_eq!(val["result"]["content"][0]["text"], "prod");
 }

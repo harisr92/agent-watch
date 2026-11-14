@@ -39,6 +39,53 @@ final class AgentModelTests: XCTestCase {
         XCTAssertEqual(prompt.options, ["y", "n"])
     }
 
+    func testSelectPromptDecodingWithChoices() throws {
+        let json = """
+        {
+            "id": "p2",
+            "session_id": "s",
+            "prompt_text": "Do you want to make this edit?",
+            "prompt_type": "select",
+            "options": ["1", "2", "3"],
+            "choices": [
+                {"label": "Yes", "value": "1"},
+                {"label": "Yes, allow all edits", "value": "2"},
+                {"label": "No", "value": "3"}
+            ],
+            "press_enter": false,
+            "created_at": "2026-11-14T10:00:00Z"
+        }
+        """.data(using: .utf8)!
+
+        let prompt = try JSONDecoder().decode(PendingPrompt.self, from: json)
+        XCTAssertEqual(prompt.promptType, .select)
+        XCTAssertEqual(prompt.choices.map(\.label), ["Yes", "Yes, allow all edits", "No"])
+        XCTAssertEqual(prompt.choices.map(\.value), ["1", "2", "3"])
+        XCTAssertFalse(prompt.pressEnter)
+    }
+
+    func testLegacyPromptFallsBackToOptions() throws {
+        let json = """
+        {
+            "id": "p3",
+            "session_id": "s",
+            "prompt_text": "Deploy where?",
+            "prompt_type": "some_future_type",
+            "options": ["staging", "production"],
+            "created_at": "2026-11-14T10:00:00Z"
+        }
+        """.data(using: .utf8)!
+
+        let prompt = try JSONDecoder().decode(PendingPrompt.self, from: json)
+        XCTAssertEqual(prompt.promptType, .text)
+        XCTAssertEqual(prompt.choices, [
+            PromptChoice(label: "staging", value: "staging"),
+            PromptChoice(label: "production", value: "production"),
+        ])
+        XCTAssertTrue(prompt.pressEnter)
+        XCTAssertEqual(prompt.confirmChoices.approve.value, "y")
+    }
+
     func testUserInputPayloadEncoding() throws {
         let payload = UserInputPayload(input: "yes", pressEnter: true)
         let data = try JSONEncoder().encode(payload)

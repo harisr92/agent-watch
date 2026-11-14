@@ -55,6 +55,16 @@ enum Commands {
         /// Session name to identify who is asking
         #[arg(short, long, default_value = "Script / CLI")]
         name: String,
+
+        /// A choice to offer; repeat for several (`-o staging -o production`).
+        /// Use `label=value` to show a label but return a different value.
+        #[arg(short = 'o', long = "option")]
+        options: Vec<String>,
+
+        /// Kind of answer: confirm, select, text, secret or acknowledge.
+        /// Defaults to select when options are given, otherwise confirm.
+        #[arg(short = 't', long = "type")]
+        prompt_type: Option<String>,
     },
 
     /// Send input to an active agent session
@@ -173,9 +183,21 @@ async fn main() -> Result<()> {
             }
         }
 
-        Commands::Ask { prompt, name } => {
+        Commands::Ask {
+            prompt,
+            name,
+            options,
+            prompt_type,
+        } => {
             let daemon_url = aw_core::get_api_base_url();
             let client = reqwest::Client::new();
+            let choices: Vec<serde_json::Value> = options
+                .iter()
+                .map(|o| match o.split_once('=') {
+                    Some((label, value)) => serde_json::json!({ "label": label, "value": value }),
+                    None => serde_json::json!({ "label": o, "value": o }),
+                })
+                .collect();
             let mcp_req = serde_json::json!({
                 "jsonrpc": "2.0",
                 "id": 1,
@@ -185,6 +207,8 @@ async fn main() -> Result<()> {
                     "arguments": {
                         "prompt": prompt,
                         "session_name": name,
+                        "choices": choices,
+                        "prompt_type": prompt_type,
                     }
                 }
             });

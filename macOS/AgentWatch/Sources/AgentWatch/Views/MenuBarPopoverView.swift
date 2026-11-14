@@ -105,8 +105,12 @@ public struct MenuBarPopoverView: View {
                                     PromptCardView(
                                         session: session,
                                         prompt: prompt,
-                                        onInput: { input in
-                                            client.submitInput(sessionId: session.id, input: input)
+                                        onInput: { input, pressEnter in
+                                            client.submitInput(
+                                                sessionId: session.id,
+                                                input: input,
+                                                pressEnter: pressEnter
+                                            )
                                         },
                                         onFocus: {
                                             client.focusTerminal(for: session)

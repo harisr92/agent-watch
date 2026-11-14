@@ -123,7 +123,7 @@ pub async fn run_with_pty(config: PtyRunnerConfig) -> Result<i32> {
     let is_running = Arc::new(AtomicBool::new(true));
 
     // Channel for remote inputs (from daemon / menu bar)
-    let (input_tx, mut input_rx) = mpsc::channel::<String>(32);
+    let (input_tx, mut input_rx) = mpsc::channel::<(String, bool)>(32);
 
     // Channel for PTY output to be sent to daemon
     let (output_tx, mut output_rx) = mpsc::channel::<String>(64);
@@ -143,11 +143,14 @@ pub async fn run_with_pty(config: PtyRunnerConfig) -> Result<i32> {
                         read.next().await
                     {
                         if let Ok(AgentEvent::PromptResolved {
-                            session_id, input, ..
+                            session_id,
+                            input,
+                            press_enter,
+                            ..
                         }) = serde_json::from_str::<AgentEvent>(&txt)
                         {
                             if session_id == target_session_id {
-                                let _ = input_tx_clone.send(input).await;
+                                let _ = input_tx_clone.send((input, press_enter)).await;
                             }
                         }
                     }
@@ -223,9 +226,11 @@ pub async fn run_with_pty(config: PtyRunnerConfig) -> Result<i32> {
     let is_running_clone = is_running.clone();
     tokio::spawn(async move {
         while is_running_clone.load(Ordering::Relaxed) {
-            if let Some(mut text) = input_rx.recv().await {
-                if !text.ends_with('\n') {
-                    text.push('\n');
+            if let Some((mut text, press_enter)) = input_rx.recv().await {
+                // Enter is a carriage return on a terminal; the tty turns it into \n for
+                // line-mode programs, and raw-mode TUIs expect \r itself.
+                if press_enter && !text.ends_with(['\r', '\n']) {
+                    text.push('\r');
                 }
                 if let Ok(mut writer) = remote_writer_arc.lock() {
                     let _ = writer.write_all(text.as_bytes());

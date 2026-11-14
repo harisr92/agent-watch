@@ -1,8 +1,8 @@
 use aw_core::buffer::RollingOutputBuffer;
 use aw_core::detector::PromptDetector;
 use aw_core::models::{
-    AgentEvent, AgentSession, AgentStatus, PendingPrompt, PromptType, RegisterSessionRequest,
-    UserInputRequest,
+    AgentEvent, AgentSession, AgentStatus, PendingPrompt, PromptChoice, PromptType,
+    RegisterSessionRequest, UserInputRequest,
 };
 use chrono::Utc;
 use std::collections::HashMap;
@@ -143,6 +143,7 @@ impl AppState {
                 session_id: session_id.to_string(),
                 prompt_id,
                 input: req.input,
+                press_enter: req.press_enter,
             });
             let _ = self
                 .events_tx
@@ -157,18 +158,28 @@ impl AppState {
         session_id: &str,
         prompt_text: String,
         prompt_type: PromptType,
-        options: Vec<String>,
+        choices: Vec<PromptChoice>,
+    ) -> Option<PendingPrompt> {
+        self.register_prompt_with_id(session_id, None, prompt_text, prompt_type, choices)
+            .await
+    }
+
+    /// Like `register_prompt`, but lets the caller fix the prompt id up front
+    /// (MCP needs it to route the answer back to the waiting tool call).
+    pub async fn register_prompt_with_id(
+        &self,
+        session_id: &str,
+        prompt_id: Option<String>,
+        prompt_text: String,
+        prompt_type: PromptType,
+        choices: Vec<PromptChoice>,
     ) -> Option<PendingPrompt> {
         let mut lock = self.sessions.write().await;
         if let Some(active) = lock.get_mut(session_id) {
-            let prompt = PendingPrompt {
-                id: Uuid::new_v4().to_string(),
-                session_id: session_id.to_string(),
-                prompt_text,
-                prompt_type,
-                options,
-                created_at: Utc::now(),
-            };
+            let mut prompt = PendingPrompt::new(session_id, prompt_text, prompt_type, choices);
+            if let Some(id) = prompt_id {
+                prompt.id = id;
+            }
 
             active.session.status = AgentStatus::WaitingForInput;
             active.session.pending_prompt = Some(prompt.clone());
