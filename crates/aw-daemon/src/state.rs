@@ -16,6 +16,10 @@ pub struct ActiveSession {
     pub buffer: RollingOutputBuffer,
     pub input_sender: Option<mpsc::Sender<UserInputRequest>>,
     pub mcp_pending_responders: HashMap<String, oneshot::Sender<String>>,
+    pub last_resolved_prompt_text: Option<String>,
+    /// True when `pending_prompt` came from output heuristics (not an explicit
+    /// registration), so later output may refine or retract it.
+    pub prompt_auto_detected: bool,
 }
 
 #[derive(Clone)]
@@ -60,6 +64,8 @@ impl AppState {
             buffer: RollingOutputBuffer::new(150),
             input_sender,
             mcp_pending_responders: HashMap::new(),
+            last_resolved_prompt_text: None,
+            prompt_auto_detected: false,
         };
 
         {
@@ -87,10 +93,53 @@ impl AppState {
                 chunk: chunk.to_string(),
             });
 
-            // If not currently waiting for input, test if prompt is detected
-            if active.session.status != AgentStatus::WaitingForInput {
-                let tail_text = active.buffer.get_tail(30).join("\n");
-                if let Some(prompt) = self.detector.detect_prompt(session_id, &tail_text) {
+            // Agents often print a question line by line, so the first detection can fire on
+            // a partial prompt (e.g. just the question, before its options arrive). While an
+            // auto-detected prompt is pending, keep re-detecting so it picks up the later lines.
+            let waiting = active.session.status == AgentStatus::WaitingForInput;
+            if waiting && !active.prompt_auto_detected {
+                return None;
+            }
+
+            let tail_text = active.buffer.get_tail(30).join("\n");
+            let detected = self.detector.detect_prompt(session_id, &tail_text);
+
+            if waiting {
+                // Only ever refine a pending prompt, never drop it: spinners or screen redraws
+                // while the agent waits must not make a real question vanish.
+                let mut prompt = detected?;
+                let current = active.session.pending_prompt.as_ref();
+                let unchanged = current.is_some_and(|c| {
+                    c.prompt_text == prompt.prompt_text
+                        && c.prompt_type == prompt.prompt_type
+                        && c.options == prompt.options
+                });
+                if unchanged {
+                    return None;
+                }
+                // Keep the id so the UI treats this as the same prompt, now complete.
+                if let Some(c) = current {
+                    prompt.id = c.id.clone();
+                    prompt.created_at = c.created_at;
+                }
+                active.session.pending_prompt = Some(prompt.clone());
+                info!(
+                    "Prompt refined for session {}: {:?}",
+                    session_id, prompt.prompt_text
+                );
+                let _ = self
+                    .events_tx
+                    .send(AgentEvent::SessionUpdated(active.session.clone()));
+                return None;
+            }
+
+            match detected {
+                Some(prompt)
+                    if active.last_resolved_prompt_text.as_deref()
+                        != Some(&prompt.prompt_text) =>
+                {
+                    active.last_resolved_prompt_text = None;
+                    active.prompt_auto_detected = true;
                     active.session.status = AgentStatus::WaitingForInput;
                     active.session.pending_prompt = Some(prompt.clone());
 
@@ -108,6 +157,8 @@ impl AppState {
                     );
                     return Some(prompt);
                 }
+                Some(_) => {}
+                None => active.last_resolved_prompt_text = None,
             }
         }
         None
@@ -123,6 +174,12 @@ impl AppState {
                 .map(|p| p.id.clone())
                 .unwrap_or_else(|| Uuid::new_v4().to_string());
 
+            active.last_resolved_prompt_text = active
+                .session
+                .pending_prompt
+                .as_ref()
+                .map(|p| p.prompt_text.clone());
+
             // Check if there is an MCP tool responder waiting
             if let Some(sender) = active.mcp_pending_responders.remove(&prompt_id) {
                 let _ = sender.send(req.input.clone());
@@ -137,6 +194,7 @@ impl AppState {
 
             active.session.status = AgentStatus::Running;
             active.session.pending_prompt = None;
+            active.prompt_auto_detected = false;
             active.session.updated_at = Utc::now();
 
             let _ = self.events_tx.send(AgentEvent::PromptResolved {
@@ -183,6 +241,7 @@ impl AppState {
 
             active.session.status = AgentStatus::WaitingForInput;
             active.session.pending_prompt = Some(prompt.clone());
+            active.prompt_auto_detected = false;
             active.session.updated_at = Utc::now();
 
             let _ = self.events_tx.send(AgentEvent::PromptRequired {

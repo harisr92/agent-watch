@@ -3,12 +3,29 @@ import SwiftUI
 public struct PromptCardView: View {
     public let session: AgentSession
     public let prompt: PendingPrompt
+    public var autoFocus: Bool
     /// Sends `input` to the agent; the flag says whether Enter follows it.
     public let onInput: (String, Bool) -> Void
     public let onFocus: () -> Void
 
     @State private var inputText: String = ""
     @State private var hoveredChoice: PromptChoice?
+    @FocusState private var isFieldFocused: Bool
+    @State private var isSubmitting: Bool = false
+
+    public init(
+        session: AgentSession,
+        prompt: PendingPrompt,
+        autoFocus: Bool = true,
+        onInput: @escaping (String, Bool) -> Void,
+        onFocus: @escaping () -> Void
+    ) {
+        self.session = session
+        self.prompt = prompt
+        self.autoFocus = autoFocus
+        self.onInput = onInput
+        self.onFocus = onFocus
+    }
 
     public var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -39,6 +56,23 @@ public struct PromptCardView: View {
                 )
         )
         .shadow(color: Color.orange.opacity(0.2), radius: 12, x: 0, y: 4)
+        .onAppear {
+            if autoFocus {
+                focusField()
+            }
+        }
+        .onChange(of: autoFocus) { shouldFocus in
+            if shouldFocus {
+                focusField()
+            }
+        }
+        .onChange(of: prompt.id) { _ in
+            isSubmitting = false
+            if autoFocus {
+                focusField()
+            }
+        }
+        .onExitCommand(perform: cancel)
     }
 
     // MARK: - Header
@@ -161,8 +195,9 @@ public struct PromptCardView: View {
         case .acknowledge:
             HStack {
                 pillButton(title: "Continue", icon: "return", color: .blue) {
-                    onInput(prompt.choices.first?.value ?? "", true)
+                    accept()
                 }
+                .keyboardShortcut(.defaultAction)
                 Spacer()
             }
         }
@@ -172,14 +207,16 @@ public struct PromptCardView: View {
         let pair = prompt.confirmChoices
         return HStack(spacing: 8) {
             pillButton(title: "Approve", icon: "checkmark", color: .green) {
-                onInput(pair.approve.value, prompt.pressEnter)
+                accept()
             }
-            .help("Sends \"\(pair.approve.value)\"")
+            .keyboardShortcut(.defaultAction)
+            .help("Approve (Enter) • Sends \"\(pair.approve.value)\"")
 
             pillButton(title: "Reject", icon: "xmark", color: .red) {
-                onInput(pair.reject.value, prompt.pressEnter)
+                cancel()
             }
-            .help("Sends \"\(pair.reject.value)\"")
+            .keyboardShortcut(.cancelAction)
+            .help("Reject (Esc) • Sends \"\(pair.reject.value)\"")
 
             inputField(placeholder: "Or type a custom reply...", secure: false)
         }
@@ -201,7 +238,11 @@ public struct PromptCardView: View {
 
     private func choiceRow(index: Int, choice: PromptChoice) -> some View {
         let isHovered = hoveredChoice == choice
-        return Button(action: { onInput(choice.value, prompt.pressEnter) }) {
+        return Button(action: {
+            guard !isSubmitting else { return }
+            isSubmitting = true
+            onInput(choice.value, prompt.pressEnter)
+        }) {
             HStack(spacing: 10) {
                 Text(badge(for: index, choice: choice))
                     .font(.system(size: 11, weight: .bold, design: .rounded))
@@ -282,16 +323,19 @@ public struct PromptCardView: View {
             Group {
                 if secure {
                     SecureField(placeholder, text: $inputText)
+                        .focused($isFieldFocused)
                 } else {
                     TextField(placeholder, text: $inputText)
+                        .focused($isFieldFocused)
                 }
             }
             .textFieldStyle(.plain)
             .font(.system(size: 12, design: .rounded))
-            .onSubmit(submitTyped)
+            .onSubmit(accept)
+            .onExitCommand(perform: cancel)
 
             if !inputText.isEmpty {
-                Button(action: submitTyped) {
+                Button(action: accept) {
                     Image(systemName: "arrow.up.circle.fill")
                         .font(.system(size: 16))
                         .foregroundColor(.blue)
@@ -304,15 +348,70 @@ public struct PromptCardView: View {
         .background(.ultraThinMaterial)
         .overlay(
             RoundedRectangle(cornerRadius: 8)
-                .stroke(Color.white.opacity(0.25), lineWidth: 0.5)
+                .stroke(isFieldFocused ? Color.orange.opacity(0.65) : Color.white.opacity(0.25), lineWidth: isFieldFocused ? 1.2 : 0.5)
         )
         .cornerRadius(8)
     }
 
-    private func submitTyped() {
-        // Secrets may legitimately be empty (e.g. a key with no passphrase); other replies may not.
-        guard !inputText.isEmpty || prompt.promptType == .secret else { return }
-        onInput(inputText, true)
+    private func focusField() {
+        DispatchQueue.main.async {
+            isFieldFocused = true
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+            if autoFocus && !isFieldFocused {
+                isFieldFocused = true
+            }
+        }
+    }
+
+    private func accept() {
+        guard !isSubmitting else { return }
+        isSubmitting = true
+
+        if !inputText.isEmpty {
+            onInput(inputText, true)
+            inputText = ""
+        } else {
+            switch prompt.promptType {
+            case .confirm:
+                let pair = prompt.confirmChoices
+                onInput(pair.approve.value, prompt.pressEnter)
+            case .select:
+                if let first = prompt.choices.first {
+                    onInput(first.value, prompt.pressEnter)
+                } else {
+                    onInput("", true)
+                }
+            case .secret, .text:
+                onInput("", true)
+            case .acknowledge:
+                onInput(prompt.choices.first?.value ?? "", true)
+            }
+        }
+    }
+
+    private func cancel() {
+        guard !isSubmitting else { return }
+        isSubmitting = true
+
+        switch prompt.promptType {
+        case .confirm:
+            let pair = prompt.confirmChoices
+            onInput(pair.reject.value, prompt.pressEnter)
+        case .select:
+            if let cancelChoice = prompt.choices.first(where: {
+                let l = $0.label.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                let v = $0.value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                return l == "cancel" || l.contains("cancel") || l.contains("abort") || l.contains("reject")
+                    || v == "n" || v == "q" || l == "no" || l == "exit" || l == "quit"
+            }) {
+                onInput(cancelChoice.value, prompt.pressEnter)
+            } else {
+                onInput("\u{1b}", false)
+            }
+        case .text, .secret, .acknowledge:
+            onInput("\u{1b}", false)
+        }
         inputText = ""
     }
 }

@@ -43,28 +43,29 @@ impl PromptDetector {
     pub fn new() -> Self {
         Self {
             confirm_regexes: compile(&[
-                r"(?i)\[y/n\]",
-                r"(?i)\(y/n\)",
-                r"(?i)\[yes/no\]",
-                r"(?i)\(yes/no\)",
-                r"(?i)approve\?",
-                r"(?i)allow this\?",
-                r"(?i)proceed\?",
-                r"(?i)continue\?\s*(\[.*?\])?",
-                r"(?i)do you want to [^?\n]+\?",
-                r"(?i)are you sure[^?\n]+\?",
-                r"(?i)run this command\?",
+                r"(?i)\[y/n\]\s*[:?]?\s*$",
+                r"(?i)\(y/n\)\s*[:?]?\s*$",
+                r"(?i)\[yes/no\]\s*[:?]?\s*$",
+                r"(?i)\(yes/no\)\s*[:?]?\s*$",
+                r"(?i)approve\?\s*$",
+                r"(?i)allow this\?\s*$",
+                r"(?i)proceed\?\s*$",
+                r"(?i)continue\?\s*(\[.*?\])?\s*[:?]?\s*$",
+                r"(?i)do you want to [^?\n]+\?\s*[:?]?\s*$",
+                r"(?i)are you sure[^?\n]+\?\s*[:?]?\s*$",
+                r"(?i)run this command\?\s*[:?]?\s*$",
             ]),
             choice_regexes: compile(&[
-                r"(?i)select an option",
-                r"(?i)choose [1-9]",
-                r"\[[0-9]-[0-9]\]:",
-                r"\([0-9]-[0-9]\):",
+                r"(?i)select an option\s*[:?]?\s*$",
+                r"(?i)choose [1-9]\s*[:?]?\s*$",
+                r"\[[0-9]-[0-9]\]:\s*$",
+                r"\([0-9]-[0-9]\):\s*$",
             ]),
             text_prompt_regexes: compile(&[
-                r"(?i)what should i [^?\n]+",
-                r"(?i)enter your choice:",
-                r"(?i)provide input:",
+                r"(?i)what should i [^?\n]*[:?>]\s*$",
+                r"(?i)what should i [^?\n]*\?\s*$",
+                r"(?i)enter your choice:\s*$",
+                r"(?i)provide input:\s*$",
                 r"(?i)input:\s*$",
                 r"(?i)>\s*$",
                 r"(?i)\?\s*>\s*$",
@@ -322,8 +323,19 @@ impl PromptDetector {
         }
         preamble.reverse();
 
-        let question = if !preamble.is_empty() {
-            preamble.join("\n")
+        let mut full_message: Vec<String> = Vec::new();
+        if !preamble.is_empty() {
+            full_message.extend(preamble.iter().map(|s| s.to_string()));
+        }
+        for opt in &lines[start..end] {
+            full_message.push(format!("  {opt}"));
+        }
+        if !trailers.is_empty() {
+            full_message.extend(trailers.iter().map(|s| s.to_string()));
+        }
+
+        let question = if !full_message.is_empty() {
+            full_message.join("\n")
         } else {
             trailing_prompt.unwrap_or("Select an option").to_string()
         };
@@ -530,11 +542,15 @@ mod tests {
         assert_eq!(p.prompt_type, PromptType::Select);
         assert_eq!(
             p.prompt_text,
-            "Analysis done.\nHow should I apply the migration?"
+            "Analysis done.\nHow should I apply the migration?\n  1) Apply now\n  2) Dry run first\n  3) Skip\nEnter your choice [1-3]:"
         );
         assert_eq!(labels(&p), vec!["Apply now", "Dry run first", "Skip"]);
         assert_eq!(p.options, vec!["1", "2", "3"]);
         assert!(p.press_enter);
+
+        let answered = "Analysis done.\nHow should I apply the migration?\n  1) Apply now\n  2) Dry run first\n  3) Skip\nEnter your choice [1-3]: 1";
+        let p_answered = detector.detect_prompt("s", answered);
+        assert!(p_answered.is_none(), "Answered menu should not be detected as prompt, got: {:?}", p_answered);
     }
 
     #[test]
@@ -543,7 +559,10 @@ mod tests {
         let text = "╭──────────────────────────────╮\n│ Do you want to make this edit? │\n│ ❯ 1. Yes                       │\n│   2. Yes, allow all edits      │\n│   3. No, tell me what to do    │\n╰──────────────────────────────╯\n  Esc to cancel";
         let p = detector.detect_prompt("s", text).expect("menu");
         assert_eq!(p.prompt_type, PromptType::Select);
-        assert_eq!(p.prompt_text, "Do you want to make this edit?");
+        assert_eq!(
+            p.prompt_text,
+            "Do you want to make this edit?\n  ❯ 1. Yes\n  2. Yes, allow all edits\n  3. No, tell me what to do\nEsc to cancel"
+        );
         assert_eq!(
             labels(&p),
             vec!["Yes", "Yes, allow all edits", "No, tell me what to do"]
@@ -562,7 +581,7 @@ mod tests {
             .expect("menu");
         assert_eq!(
             p.prompt_text,
-            "[MenuAgent] Planning database migration...\nHow should I apply the migration?"
+            "[MenuAgent] Planning database migration...\nHow should I apply the migration?\n  1) Apply now\n  2) Dry run first\n  3) Skip this step\nEnter your choice [1-3]:"
         );
         assert_eq!(
             labels(&p),
@@ -577,7 +596,7 @@ mod tests {
         let p = detector.detect_prompt("s", text).expect("menu");
         assert_eq!(
             p.prompt_text,
-            "[MenuAgent] Planning database migration...\nHow should I apply the migration?"
+            "[MenuAgent] Planning database migration...\nHow should I apply the migration?\n  1) Apply now\n  2) Dry run first\n  3) Skip\nEnter your choice [1-3]:"
         );
     }
 
@@ -588,7 +607,7 @@ mod tests {
         let p = detector.detect_prompt("s", text).expect("menu");
         assert_eq!(
             p.prompt_text,
-            "[MenuAgent] Planning database migration...\nHow should I apply the migration?"
+            "[MenuAgent] Planning database migration...\nHow should I apply the migration?\n  1) Apply now\n  2) Dry run first\n  3) Skip\nEnter your choice [1-3]:"
         );
     }
 

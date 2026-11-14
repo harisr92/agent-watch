@@ -38,6 +38,7 @@ public struct AgentSessionListView: View {
                             PromptCardView(
                                 session: session,
                                 prompt: prompt,
+                                autoFocus: session.id == client.waitingSessions.first?.id,
                                 onInput: { input, pressEnter in
                                     client.submitInput(
                                         sessionId: session.id,
@@ -49,6 +50,7 @@ public struct AgentSessionListView: View {
                                     client.focusTerminal(for: session)
                                 }
                             )
+                            .id(prompt.id)
                         }
                     }
                 }

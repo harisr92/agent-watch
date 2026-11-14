@@ -299,12 +299,176 @@ async fn test_mock_menu_agent_output_communicates_entire_message() {
     assert_eq!(prompt.prompt_type, PromptType::Select);
     assert_eq!(
         prompt.prompt_text,
-        "[MenuAgent] Planning database migration...\nHow should I apply the migration?"
+        "[MenuAgent] Planning database migration...\nHow should I apply the migration?\n  1) Apply now\n  2) Dry run first\n  3) Skip this step\nEnter your choice [1-3]:"
     );
     let labels: Vec<_> = prompt.choices.iter().map(|c| c.label.as_str()).collect();
     assert_eq!(labels, vec!["Apply now", "Dry run first", "Skip this step"]);
     assert_eq!(prompt.options, vec!["1", "2", "3"]);
     assert!(prompt.press_enter);
+
+    // 1. User answers "1"
+    post_json(
+        &app,
+        "/api/v1/sessions/menu-agent/input",
+        json!({ "input": "1", "press_enter": true }),
+    )
+    .await;
+
+    // Terminal echoes input and next output
+    post_json(
+        &app,
+        "/api/v1/sessions/menu-agent/output",
+        json!({ "chunk": "1\r\n\x1b[1;32m[MenuAgent]\x1b[0m You picked option '1'\r\n" }),
+    )
+    .await;
+
+    // Verify session status is Running, no phantom prompt
+    let session = state.get_session("menu-agent").await.unwrap();
+    assert_eq!(session.status, AgentStatus::Running);
+    assert!(session.pending_prompt.is_none());
+
+    // 2. Mock agent asks for API key (getpass)
+    post_json(
+        &app,
+        "/api/v1/sessions/menu-agent/output",
+        json!({ "chunk": "Enter your API key: " }),
+    )
+    .await;
+
+    let session = state.get_session("menu-agent").await.unwrap();
+    let prompt2 = session.pending_prompt.expect("api key prompt detected");
+    assert_eq!(prompt2.prompt_type, PromptType::Secret);
+    assert_eq!(prompt2.prompt_text, "Enter your API key:");
+
+    // User submits API key
+    post_json(
+        &app,
+        "/api/v1/sessions/menu-agent/input",
+        json!({ "input": "sk-secret123", "press_enter": true }),
+    )
+    .await;
+
+    // Agent prints next step and wait for Enter
+    post_json(
+        &app,
+        "/api/v1/sessions/menu-agent/output",
+        json!({ "chunk": "\r\n\x1b[1;32m[MenuAgent]\x1b[0m Got a key of 12 characters\r\nMigration plan ready. Press Enter to continue..." }),
+    )
+    .await;
+
+    let session = state.get_session("menu-agent").await.unwrap();
+    let prompt3 = session.pending_prompt.expect("acknowledge prompt detected");
+    assert_eq!(prompt3.prompt_type, PromptType::Acknowledge);
+
+    // User submits Enter
+    post_json(
+        &app,
+        "/api/v1/sessions/menu-agent/input",
+        json!({ "input": "", "press_enter": true }),
+    )
+    .await;
+
+    // Agent finishes
+    post_json(
+        &app,
+        "/api/v1/sessions/menu-agent/output",
+        json!({ "chunk": "\r\n\x1b[1;32m[MenuAgent]\x1b[0m Done.\r\n" }),
+    )
+    .await;
+    post_json(
+        &app,
+        "/api/v1/sessions/menu-agent/terminate",
+        json!({ "exit_code": 0 }),
+    )
+    .await;
+
+    let session = state.get_session("menu-agent").await.unwrap();
+    assert_eq!(session.status, AgentStatus::Completed);
+    assert!(session.pending_prompt.is_none());
+
+    // NOW: Run it a SECOND time (new session menu-agent-2)
+    post_json(
+        &app,
+        "/api/v1/sessions/register",
+        json!({ "id": "menu-agent-2", "name": "mock_menu_agent.py", "command": "python3", "args": ["scripts/mock_menu_agent.py"], "cwd": "/tmp", "pid": null }),
+    )
+    .await;
+
+    post_json(
+        &app,
+        "/api/v1/sessions/menu-agent-2/output",
+        json!({ "chunk": "\x1b[1;35m[MenuAgent]\x1b[0m Planning database migration...\r\n" }),
+    )
+    .await;
+    post_json(
+        &app,
+        "/api/v1/sessions/menu-agent-2/output",
+        json!({ "chunk": "How should I apply the migration?\r\n  1) Apply now\r\n  2) Dry run first\r\n  3) Skip this step\r\nEnter your choice [1-3]: " }),
+    )
+    .await;
+
+    let session2 = state.get_session("menu-agent-2").await.expect("session 2");
+    let prompt_run2 = session2.pending_prompt.expect("prompt detected on run 2");
+    assert_eq!(prompt_run2.prompt_type, PromptType::Select);
+    assert_eq!(
+        prompt_run2.prompt_text,
+        "[MenuAgent] Planning database migration...\nHow should I apply the migration?\n  1) Apply now\n  2) Dry run first\n  3) Skip this step\nEnter your choice [1-3]:"
+    );
+}
+
+#[tokio::test]
+async fn test_menu_streamed_line_by_line_shows_all_options() {
+    // A real PTY delivers print() output one line at a time; the question line alone
+    // already looks like a prompt, so the pending prompt must be refined as options arrive.
+    let state = AppState::new();
+    let app = create_router(state.clone());
+
+    post_json(
+        &app,
+        "/api/v1/sessions/register",
+        json!({ "id": "menu-lines", "name": "mock_menu_agent.py", "command": "python3", "args": ["scripts/mock_menu_agent.py"], "cwd": "/tmp", "pid": null }),
+    )
+    .await;
+
+    for chunk in [
+        "\x1b[1;35m[MenuAgent]\x1b[0m Planning database migration...\r\n",
+        "How should I apply the migration?\r\n",
+        "  1) Apply now\r\n",
+        "  2) Dry run first\r\n",
+        "  3) Skip this step\r\n",
+        "Enter your choice [1-3]: ",
+    ] {
+        post_json(
+            &app,
+            "/api/v1/sessions/menu-lines/output",
+            json!({ "chunk": chunk }),
+        )
+        .await;
+    }
+
+    let session = state.get_session("menu-lines").await.expect("session");
+    assert_eq!(session.status, AgentStatus::WaitingForInput);
+    let prompt = session.pending_prompt.expect("prompt detected");
+    assert_eq!(prompt.prompt_type, PromptType::Select);
+    assert_eq!(
+        prompt.prompt_text,
+        "[MenuAgent] Planning database migration...\nHow should I apply the migration?\n  1) Apply now\n  2) Dry run first\n  3) Skip this step\nEnter your choice [1-3]:"
+    );
+    assert_eq!(prompt.options, vec!["1", "2", "3"]);
+    let prompt_id = prompt.id;
+
+    // Noise while waiting (e.g. a spinner redraw) must not remove the pending prompt.
+    post_json(
+        &app,
+        "/api/v1/sessions/menu-lines/output",
+        json!({ "chunk": "\r\n\u{280b} waiting for input\r\n" }),
+    )
+    .await;
+    let session = state.get_session("menu-lines").await.expect("session");
+    assert_eq!(session.status, AgentStatus::WaitingForInput);
+    let prompt = session.pending_prompt.expect("prompt kept");
+    assert_eq!(prompt.id, prompt_id);
+    assert_eq!(prompt.options, vec!["1", "2", "3"]);
 }
 
 #[tokio::test]
