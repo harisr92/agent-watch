@@ -83,7 +83,10 @@ mod tests {
         // PTYs emit \r\n, and a read can split the pair across chunks.
         buf.append("1) Apply now\r");
         buf.append("\n2) Dry run\r\nChoice: ");
-        assert_eq!(buf.get_lines(), vec!["1) Apply now", "2) Dry run", "Choice: "]);
+        assert_eq!(
+            buf.get_lines(),
+            vec!["1) Apply now", "2) Dry run", "Choice: "]
+        );
     }
 
     #[test]

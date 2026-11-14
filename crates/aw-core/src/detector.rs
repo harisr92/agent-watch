@@ -557,12 +557,17 @@ mod tests {
         let mut buf = crate::buffer::RollingOutputBuffer::new(30);
         buf.append("\x1b[1;35m[MenuAgent]\x1b[0m Planning database migration...\r\nHow should I apply the migration?\r\n  1) Apply now\r\n  2) Dry run first\r\n  3) Skip this step\r\nEnter your choice [1-3]: ");
         let tail = buf.get_tail(30).join("\n");
-        let p = PromptDetector::new().detect_prompt("s", &tail).expect("menu");
+        let p = PromptDetector::new()
+            .detect_prompt("s", &tail)
+            .expect("menu");
         assert_eq!(
             p.prompt_text,
             "[MenuAgent] Planning database migration...\nHow should I apply the migration?"
         );
-        assert_eq!(labels(&p), vec!["Apply now", "Dry run first", "Skip this step"]);
+        assert_eq!(
+            labels(&p),
+            vec!["Apply now", "Dry run first", "Skip this step"]
+        );
     }
 
     #[test]
