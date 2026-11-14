@@ -54,5 +54,5 @@ chmod +x "$APP_DIR/Contents/MacOS/aw"
 
 echo "✅ Successfully created $APP_DIR"
 echo "👉 You can run it with: open $APP_DIR"
-echo "👉 Or install to /Applications (delete the old copy first, or macOS kills the new binary):"
-echo "   rm -rf /Applications/AgentWatch.app && cp -R $APP_DIR /Applications/"
+echo "👉 Or install everything (app, CLI, login service):"
+echo "   ./scripts/install.sh"

@@ -54,26 +54,22 @@ This generates:
 
 ### 2. Install
 
-You can move `AgentWatch.app` to your Applications folder and symlink `aw` to your PATH:
+Run the automated install script to copy `AgentWatch.app` to `/Applications`, symlink `aw` to `~/.local/bin/aw`, and set up the LaunchAgent service so Agent Watch starts automatically at login:
 
 ```bash
-# Copy macOS App (remove the old copy first, see note below)
-rm -rf /Applications/AgentWatch.app
-cp -R dist/AgentWatch.app /Applications/
-
-# Put the bundled CLI on your PATH (any directory on PATH works; ~/.local/bin needs no sudo)
-mkdir -p ~/.local/bin
-ln -sf /Applications/AgentWatch.app/Contents/MacOS/aw ~/.local/bin/aw
+./scripts/install.sh
 ```
 
-The symlink follows the app, so reinstalling `AgentWatch.app` updates `aw` too. If `~/.local/bin`
-isn't on your PATH, add `export PATH="$HOME/.local/bin:$PATH"` to `~/.zshrc`.
+The installer handles:
+- Stopping any older running instances cleanly (avoiding macOS binary caching issues)
+- Copying `AgentWatch.app` to `/Applications/AgentWatch.app`
+- Creating the symlink `~/.local/bin/aw -> /Applications/AgentWatch.app/Contents/MacOS/aw`
+- Installing `com.agentwatch.app.plist` to `~/Library/LaunchAgents/` and loading it with `launchctl`
+- Launching Agent Watch immediately in your macOS Menu Bar
 
-> **Always delete before re-copying.** Copying a new binary *over* an existing one makes macOS
-> keep the old file's cached code signature, and the kernel then kills the new binary on launch
-> (`zsh: killed aw ...`, exit code 137). Removing the old file first avoids this.
-> After updating, quit Agent Watch and stop any old daemon (`pkill -f "aw daemon"`) so the new
-> version is used.
+If `~/.local/bin` isn't on your PATH, add `export PATH="$HOME/.local/bin:$PATH"` to your `~/.zshrc` or `~/.bashrc`.
+
+> **Note on manual installation**: If copying manually, always delete `/Applications/AgentWatch.app` before copying a new build over it to avoid macOS code-signature caching errors (`exit code 137`).
 
 ### 3. Launch Agent Watch
 
