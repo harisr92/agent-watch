@@ -3,10 +3,14 @@ name: Release
 on:
   push:
     tags:
-      - 'v*'
+      - 'v[0-9]*'
 
 permissions:
   contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   build-release:
@@ -22,21 +26,39 @@ jobs:
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
 
+      - name: Run Tests
+        run: |
+          cargo test --workspace
+          (cd macOS/AgentWatch && swift test)
+
       - name: Build and Package Release App & CLI
+        env:
+          APP_VERSION: ${{ github.ref_name }}
         run: ./scripts/package_app.sh
 
-      - name: Create Zip Archives
+      - name: Verify Bundle
+        run: |
+          test -x dist/AgentWatch.app/Contents/MacOS/AgentWatch
+          test -x dist/AgentWatch.app/Contents/MacOS/aw
+          codesign --verify --deep --strict dist/AgentWatch.app
+          /usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' dist/AgentWatch.app/Contents/Info.plist
+
+      - name: Create Archives & Checksums
         run: |
           VERSION="${GITHUB_REF_NAME}"
-          cd dist
-          zip -r "AgentWatch-${VERSION}-macOS.zip" AgentWatch.app
-          cd ..
-          cp target/release/aw "aw-${VERSION}-darwin-arm64"
+          ARCH="$(uname -m)"
+          mkdir -p release
+          # ditto preserves macOS bundle metadata, symlinks and code signatures (zip -r does not).
+          ditto -c -k --sequesterRsrc --keepParent dist/AgentWatch.app "release/AgentWatch-${VERSION}-macOS-${ARCH}.zip"
+          cp target/release/aw "release/aw-${VERSION}-darwin-${ARCH}"
+          tar -C target/release -czf "release/aw-${VERSION}-darwin-${ARCH}.tar.gz" aw
+          cd release
+          shasum -a 256 * > SHA256SUMS.txt
+          cat SHA256SUMS.txt
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          files: |
-            dist/AgentWatch-*-macOS.zip
-            aw-*-darwin-arm64
+          files: release/*
           generate_release_notes: true
+          prerelease: ${{ contains(github.ref_name, '-') }}

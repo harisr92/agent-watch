@@ -4,6 +4,10 @@ set -e
 DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )/.." && pwd )"
 cd "$DIR"
 
+# Bundle version: APP_VERSION env var (e.g. from a git tag "v1.2.3"), defaulting to 0.0.0-dev.
+APP_VERSION="${APP_VERSION:-0.0.0-dev}"
+APP_VERSION="${APP_VERSION#v}"
+
 echo "🦀 1. Building Rust Core & CLI (aw)..."
 cargo build --release
 
@@ -22,7 +26,7 @@ cp "macOS/AgentWatch/.build/release/AgentWatch" "$APP_DIR/Contents/MacOS/AgentWa
 cp "$DIR/target/release/aw" "$APP_DIR/Contents/MacOS/aw"
 cp "macOS/AgentWatch/Resources/AppIcon.icns" "$APP_DIR/Contents/Resources/AppIcon.icns"
 
-cat << 'EOF' > "$APP_DIR/Contents/Info.plist"
+cat << EOF > "$APP_DIR/Contents/Info.plist"
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -34,7 +38,9 @@ cat << 'EOF' > "$APP_DIR/Contents/Info.plist"
     <key>CFBundleIdentifier</key>
     <string>com.agentwatch.mac</string>
     <key>CFBundleVersion</key>
-    <string>1.0.0</string>
+    <string>${APP_VERSION}</string>
+    <key>CFBundleShortVersionString</key>
+    <string>${APP_VERSION}</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleExecutable</key>
@@ -51,6 +57,9 @@ EOF
 
 chmod +x "$APP_DIR/Contents/MacOS/AgentWatch"
 chmod +x "$APP_DIR/Contents/MacOS/aw"
+
+# Ad-hoc sign the bundle so it launches on Apple Silicon after Info.plist/binaries were assembled.
+codesign --force --deep --sign - "$APP_DIR"
 
 echo "✅ Successfully created $APP_DIR"
 echo "👉 You can run it with: open $APP_DIR"
