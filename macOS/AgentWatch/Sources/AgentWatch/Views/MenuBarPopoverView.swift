@@ -47,12 +47,7 @@ public struct MenuBarPopoverView: View {
                 }
                 .padding(.horizontal, 8)
                 .padding(.vertical, 3)
-                .background(.ultraThinMaterial)
-                .clipShape(Capsule())
-                .overlay(
-                    Capsule()
-                        .stroke(Color.white.opacity(0.2), lineWidth: 0.5)
-                )
+                .liquidGlass(in: Capsule())
 
                 // Separate Window Icon Button
                 Button(action: {
@@ -62,12 +57,7 @@ public struct MenuBarPopoverView: View {
                         .font(.system(size: 12, weight: .semibold))
                         .foregroundColor(.primary.opacity(0.85))
                         .frame(width: 26, height: 26)
-                        .background(.ultraThinMaterial)
-                        .clipShape(RoundedRectangle(cornerRadius: 6))
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 6)
-                                .stroke(Color.white.opacity(0.2), lineWidth: 0.5)
-                        )
+                        .liquidGlass(in: RoundedRectangle(cornerRadius: 6), interactive: true)
                 }
                 .buttonStyle(.plain)
                 .help("Separate into floating Apple glass window")
@@ -200,6 +190,5 @@ public struct MenuBarPopoverView: View {
             .background(Color.white.opacity(0.04))
         }
         .frame(width: 400)
-        .background(.ultraThinMaterial)
     }
 }

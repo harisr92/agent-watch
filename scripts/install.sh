@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
 set -e
 
-DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )/.." && pwd )"
+# Resolve symlinks (./install.sh at the repo root links here) before finding the repo root.
+SCRIPT_PATH="$(readlink -f "${BASH_SOURCE[0]}")"
+DIR="$( cd "$( dirname "$SCRIPT_PATH" )/.." && pwd )"
 cd "$DIR"
 
 MODE="app"
-FORCE_BUILD=false
+SKIP_BUILD=false
 NO_START=false
 
 # Parse arguments
@@ -16,7 +18,11 @@ while [[ $# -gt 0 ]]; do
             shift
             ;;
         --build)
-            FORCE_BUILD=true
+            # Default behaviour now; kept for backwards compatibility.
+            shift
+            ;;
+        --skip-build)
+            SKIP_BUILD=true
             shift
             ;;
         --no-start)
@@ -30,7 +36,7 @@ while [[ $# -gt 0 ]]; do
             echo "and configures a LaunchAgent so it starts automatically at login."
             echo ""
             echo "Options:"
-            echo "  --build        Force rebuilding release binaries and app bundle"
+            echo "  --skip-build   Reuse the existing dist/AgentWatch.app instead of rebuilding"
             echo "  --daemon-only  Configure launchd for headless daemon instead of Menu Bar app"
             echo "  --no-start     Install and configure without launching immediately"
             echo "  -h, --help     Show this help message"
@@ -46,15 +52,13 @@ done
 
 echo "🚀 Installing Agent Watch..."
 
-# 1. Build and package if needed or requested
-if [ "$FORCE_BUILD" = true ] || [ ! -d "$DIR/dist/AgentWatch.app" ]; then
+# 1. Build and package. Always rebuild so the installed app matches the source
+#    tree; cargo and swift build incrementally, so this is quick when nothing changed.
+if [ "$SKIP_BUILD" = true ] && [ -d "$DIR/dist/AgentWatch.app" ]; then
+    echo "⏭️  Skipping build, reusing existing dist/AgentWatch.app"
+else
     echo "📦 Building and packaging AgentWatch.app..."
     "$DIR/scripts/package_app.sh"
-else
-    # Ensure bundled 'aw' binary is at least as new as target/release/aw if it exists
-    if [ -f "$DIR/target/release/aw" ]; then
-        cp "$DIR/target/release/aw" "$DIR/dist/AgentWatch.app/Contents/MacOS/aw"
-    fi
 fi
 
 # 2. Stop any existing running instances before copying (avoids macOS code-sign cache issue)
