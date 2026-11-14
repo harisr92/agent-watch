@@ -180,6 +180,15 @@ public class DaemonClient: ObservableObject {
                 return
             }
 
+            if type == "history_cleared",
+               let payload = json["payload"] as? [String: Any],
+               let ids = payload["session_ids"] as? [String] {
+                let removed = Set(ids)
+                sessions.removeAll { removed.contains($0.id) }
+                StatusBarController.shared.updateStatusItem()
+                return
+            }
+
             if type == "session_terminated",
                let payload = json["payload"] as? [String: Any],
                let sessionId = payload["session_id"] as? String {
@@ -285,6 +294,25 @@ public class DaemonClient: ObservableObject {
 
         Task {
             _ = try? await URLSession.shared.data(for: request)
+        }
+    }
+
+    /// Removes finished sessions locally and asks the daemon to forget them.
+    public func clearHistory() {
+        let finished = Set(recentSessions.map(\.id))
+        sessions.removeAll { finished.contains($0.id) }
+        StatusBarController.shared.updateStatusItem()
+
+        guard let url = URL(string: "\(apiBaseUrl)/api/v1/sessions/history/clear") else { return }
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+
+        Task {
+            do {
+                _ = try await URLSession.shared.data(for: request)
+            } catch {
+                print("Failed to clear history: \(error)")
+            }
         }
     }
 

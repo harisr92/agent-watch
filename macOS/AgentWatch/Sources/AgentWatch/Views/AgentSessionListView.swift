@@ -108,9 +108,23 @@ public struct AgentSessionListView: View {
             // 3. RECENT HISTORY
             if !client.recentSessions.isEmpty {
                 VStack(alignment: .leading, spacing: 8) {
-                    Text("RECENT HISTORY")
-                        .font(.system(size: 11, weight: .bold, design: .rounded))
-                        .foregroundColor(.secondary.opacity(0.8))
+                    HStack {
+                        Text("RECENT HISTORY")
+                            .font(.system(size: 11, weight: .bold, design: .rounded))
+                            .foregroundColor(.secondary.opacity(0.8))
+
+                        Spacer()
+
+                        Button {
+                            client.clearHistory()
+                        } label: {
+                            Text("Clear")
+                                .font(.system(size: 11, weight: .semibold, design: .rounded))
+                                .foregroundColor(.secondary)
+                        }
+                        .buttonStyle(.plain)
+                        .help("Remove all finished sessions from history")
+                    }
 
                     let historyItems = displayedRecentSessions
                     ForEach(historyItems) { session in

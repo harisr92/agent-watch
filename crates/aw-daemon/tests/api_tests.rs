@@ -556,3 +556,54 @@ async fn test_mcp_request_user_input_returns_chosen_option() {
         .unwrap();
     assert_eq!(val["result"]["content"][0]["text"], "prod");
 }
+
+#[tokio::test]
+async fn test_clear_history_removes_only_finished_sessions() {
+    let state = AppState::new();
+    let app = create_router(state.clone());
+    let mut rx = state.events_tx.subscribe();
+
+    for id in ["done", "failed", "live"] {
+        state
+            .register_session(
+                RegisterSessionRequest {
+                    id: id.into(),
+                    name: id.into(),
+                    command: "echo".into(),
+                    args: vec![],
+                    cwd: ".".into(),
+                    pid: None,
+                },
+                None,
+            )
+            .await;
+    }
+    state.terminate_session("done", Some(0)).await;
+    state.terminate_session("failed", Some(1)).await;
+
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/v1/sessions/history/clear")
+        .body(Body::empty())
+        .unwrap();
+    let resp = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = resp.into_body().collect().await.unwrap().to_bytes();
+    let json: Value = serde_json::from_slice(&body).unwrap();
+    let mut removed: Vec<String> = serde_json::from_value(json["removed"].clone()).unwrap();
+    removed.sort();
+    assert_eq!(removed, vec!["done".to_string(), "failed".to_string()]);
+
+    let remaining = state.get_all_sessions().await;
+    assert_eq!(remaining.len(), 1);
+    assert_eq!(remaining[0].id, "live");
+
+    let mut saw_cleared = false;
+    while let Ok(event) = rx.try_recv() {
+        if let AgentEvent::HistoryCleared { session_ids } = event {
+            assert_eq!(session_ids.len(), 2);
+            saw_cleared = true;
+        }
+    }
+    assert!(saw_cleared, "expected a history_cleared event");
+}

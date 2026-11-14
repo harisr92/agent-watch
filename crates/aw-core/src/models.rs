@@ -113,6 +113,10 @@ pub enum AgentEvent {
         session_id: String,
         exit_code: Option<i32>,
     },
+    /// Finished sessions (completed / failed / idle) were removed from the daemon.
+    HistoryCleared {
+        session_ids: Vec<String>,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

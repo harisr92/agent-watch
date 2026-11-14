@@ -283,6 +283,34 @@ impl AppState {
         }
     }
 
+    /// Removes every finished session (completed, failed or idle) and returns the removed IDs.
+    /// Running and waiting sessions are kept.
+    pub async fn clear_history(&self) -> Vec<String> {
+        let mut lock = self.sessions.write().await;
+        let removed: Vec<String> = lock
+            .iter()
+            .filter(|(_, a)| {
+                matches!(
+                    a.session.status,
+                    AgentStatus::Completed | AgentStatus::Failed | AgentStatus::Idle
+                )
+            })
+            .map(|(id, _)| id.clone())
+            .collect();
+        for id in &removed {
+            lock.remove(id);
+        }
+        drop(lock);
+
+        if !removed.is_empty() {
+            let _ = self.events_tx.send(AgentEvent::HistoryCleared {
+                session_ids: removed.clone(),
+            });
+            info!("Cleared {} finished session(s) from history", removed.len());
+        }
+        removed
+    }
+
     pub async fn get_all_sessions(&self) -> Vec<AgentSession> {
         let lock = self.sessions.read().await;
         let mut list: Vec<AgentSession> = lock.values().map(|a| a.session.clone()).collect();

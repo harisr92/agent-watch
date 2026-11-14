@@ -26,6 +26,7 @@ pub fn create_router(state: AppState) -> Router {
         .route("/health", get(health_check))
         .route("/api/v1/sessions", get(list_sessions))
         .route("/api/v1/sessions/register", post(register_session))
+        .route("/api/v1/sessions/history/clear", post(clear_history))
         .route("/api/v1/sessions/:id", get(get_session))
         .route("/api/v1/sessions/:id/output", post(append_output))
         .route("/api/v1/sessions/:id/prompt", post(register_prompt))
@@ -51,6 +52,11 @@ async fn health_check() -> &'static str {
 
 async fn list_sessions(State(state): State<AppState>) -> Json<Vec<AgentSession>> {
     Json(state.get_all_sessions().await)
+}
+
+async fn clear_history(State(state): State<AppState>) -> Json<Value> {
+    let removed = state.clear_history().await;
+    Json(json!({ "removed": removed }))
 }
 
 async fn get_session(
