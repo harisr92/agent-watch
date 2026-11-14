@@ -1,3 +1,5 @@
+<img src="assets/icon/icon-256.png" width="128" alt="Agent Watch icon">
+
 # Agent Watch (aw)
 
 > **Universal macOS Desktop Control & Monitor for AI Agents**

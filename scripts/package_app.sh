@@ -20,6 +20,7 @@ mkdir -p "$APP_DIR/Contents/Resources"
 
 cp "macOS/AgentWatch/.build/release/AgentWatch" "$APP_DIR/Contents/MacOS/AgentWatch"
 cp "$DIR/target/release/aw" "$APP_DIR/Contents/MacOS/aw"
+cp "macOS/AgentWatch/Resources/AppIcon.icns" "$APP_DIR/Contents/Resources/AppIcon.icns"
 
 cat << 'EOF' > "$APP_DIR/Contents/Info.plist"
 <?xml version="1.0" encoding="UTF-8"?>
@@ -38,6 +39,8 @@ cat << 'EOF' > "$APP_DIR/Contents/Info.plist"
     <string>APPL</string>
     <key>CFBundleExecutable</key>
     <string>AgentWatch</string>
+    <key>CFBundleIconFile</key>
+    <string>AppIcon</string>
     <key>LSUIElement</key>
     <true/>
     <key>NSHighResolutionCapable</key>
