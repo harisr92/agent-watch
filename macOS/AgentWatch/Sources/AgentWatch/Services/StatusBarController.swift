@@ -5,8 +5,8 @@ import SwiftUI
 public class StatusBarController: ObservableObject {
     public static let shared = StatusBarController()
 
-    private var statusItem: NSStatusItem!
-    public var popover: NSPopover!
+    private var statusItem: NSStatusItem?
+    public var popover: NSPopover?
     private var eventMonitor: Any?
 
     private init() {}
@@ -14,13 +14,14 @@ public class StatusBarController: ObservableObject {
     public func setup() {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
 
-        popover = NSPopover()
-        popover.contentSize = NSSize(width: 420, height: 490)
-        popover.behavior = .transient
-        popover.animates = true
-        popover.contentViewController = NSHostingController(rootView: MenuBarPopoverView())
+        let pop = NSPopover()
+        pop.contentSize = NSSize(width: 420, height: 490)
+        pop.behavior = .transient
+        pop.animates = true
+        pop.contentViewController = NSHostingController(rootView: MenuBarPopoverView())
+        popover = pop
 
-        if let button = statusItem.button {
+        if let button = statusItem?.button {
             button.image = NSImage(systemSymbolName: "eyes", accessibilityDescription: "Agent Watch")
             button.action = #selector(togglePopover)
             button.target = self
@@ -30,6 +31,7 @@ public class StatusBarController: ObservableObject {
     }
 
     @objc public func togglePopover() {
+        guard let popover = popover else { return }
         if popover.isShown {
             hidePopover()
         } else {
@@ -38,7 +40,7 @@ public class StatusBarController: ObservableObject {
     }
 
     public func showPopover() {
-        guard let button = statusItem.button else { return }
+        guard let popover = popover, let button = statusItem?.button else { return }
 
         // Activate app so the popover takes immediate focus
         NSApp.activate(ignoringOtherApps: true)
@@ -53,7 +55,7 @@ public class StatusBarController: ObservableObject {
     }
 
     public func hidePopover() {
-        popover.performClose(nil)
+        popover?.performClose(nil)
         if let monitor = eventMonitor {
             NSEvent.removeMonitor(monitor)
             eventMonitor = nil
@@ -61,7 +63,7 @@ public class StatusBarController: ObservableObject {
     }
 
     public func updateStatusItem() {
-        guard let button = statusItem.button else { return }
+        guard let button = statusItem?.button else { return }
         let client = DaemonClient.shared
 
         if !client.waitingSessions.isEmpty {

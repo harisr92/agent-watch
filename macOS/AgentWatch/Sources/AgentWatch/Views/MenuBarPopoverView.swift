@@ -2,6 +2,7 @@ import SwiftUI
 
 public struct MenuBarPopoverView: View {
     @ObservedObject var client = DaemonClient.shared
+    @ObservedObject var windowManager = WindowManager.shared
 
     public init() {}
 
@@ -27,7 +28,7 @@ public struct MenuBarPopoverView: View {
                 VStack(alignment: .leading, spacing: 1) {
                     Text("Agent Watch")
                         .font(.system(size: 14, weight: .bold, design: .rounded))
-                    Text(summarySubtitle)
+                    Text(client.summarySubtitle)
                         .font(.system(size: 10, design: .rounded))
                         .foregroundColor(.secondary)
                 }
@@ -53,6 +54,24 @@ public struct MenuBarPopoverView: View {
                         .stroke(Color.white.opacity(0.2), lineWidth: 0.5)
                 )
 
+                // Separate Window Icon Button
+                Button(action: {
+                    windowManager.openDetachedWindow()
+                }) {
+                    Image(systemName: "macwindow.on.rectangle")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundColor(.primary.opacity(0.85))
+                        .frame(width: 26, height: 26)
+                        .background(.ultraThinMaterial)
+                        .clipShape(RoundedRectangle(cornerRadius: 6))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 6)
+                                .stroke(Color.white.opacity(0.2), lineWidth: 0.5)
+                        )
+                }
+                .buttonStyle(.plain)
+                .help("Separate into floating Apple glass window")
+
                 if !client.isConnected {
                     Button("Start Daemon") {
                         client.launchDaemon()
@@ -71,125 +90,51 @@ public struct MenuBarPopoverView: View {
                 )
             )
 
+            // Status Banner when separate glass window is active
+            if windowManager.isWindowOpen {
+                HStack(spacing: 8) {
+                    Image(systemName: "macwindow.fill")
+                        .font(.system(size: 11))
+                        .foregroundColor(.blue)
+
+                    Text("Separate glass window active")
+                        .font(.system(size: 11, weight: .medium, design: .rounded))
+                        .foregroundColor(.secondary)
+
+                    Spacer()
+
+                    Button("Bring to Front") {
+                        windowManager.bringToFront()
+                        StatusBarController.shared.hidePopover()
+                    }
+                    .font(.system(size: 10, weight: .semibold, design: .rounded))
+                    .buttonStyle(.bordered)
+                    .controlSize(.mini)
+
+                    Button("Dock Back") {
+                        windowManager.closeDetachedWindow()
+                    }
+                    .font(.system(size: 10, weight: .semibold, design: .rounded))
+                    .buttonStyle(.borderless)
+                    .controlSize(.mini)
+                    .foregroundColor(.secondary)
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 6)
+                .background(Color.blue.opacity(0.08))
+                .overlay(
+                    Rectangle()
+                        .stroke(Color.blue.opacity(0.18), lineWidth: 0.5)
+                )
+            }
+
             Divider()
                 .opacity(0.3)
 
             // Scrollable Content
             ScrollView {
-                VStack(alignment: .leading, spacing: 16) {
-                    // 1. NEEDS ATTENTION (URGENT GLASS CARDS)
-                    if !client.waitingSessions.isEmpty {
-                        VStack(alignment: .leading, spacing: 10) {
-                            HStack {
-                                HStack(spacing: 5) {
-                                    Image(systemName: "bell.badge.fill")
-                                        .font(.system(size: 11))
-                                    Text("NEEDS ATTENTION")
-                                        .font(.system(size: 11, weight: .bold, design: .rounded))
-                                }
-                                .foregroundColor(.orange)
-
-                                Spacer()
-
-                                Text("\(client.waitingSessions.count)")
-                                    .font(.system(size: 11, weight: .bold, design: .rounded))
-                                    .padding(.horizontal, 7)
-                                    .padding(.vertical, 1)
-                                    .background(Color.orange.opacity(0.25))
-                                    .foregroundColor(.orange)
-                                    .clipShape(Capsule())
-                            }
-
-                            ForEach(client.waitingSessions) { session in
-                                if let prompt = session.pendingPrompt {
-                                    PromptCardView(
-                                        session: session,
-                                        prompt: prompt,
-                                        onInput: { input, pressEnter in
-                                            client.submitInput(
-                                                sessionId: session.id,
-                                                input: input,
-                                                pressEnter: pressEnter
-                                            )
-                                        },
-                                        onFocus: {
-                                            client.focusTerminal(for: session)
-                                        }
-                                    )
-                                }
-                            }
-                        }
-                    }
-
-                    // 2. ACTIVE AGENTS
-                    VStack(alignment: .leading, spacing: 10) {
-                        HStack {
-                            Text("ACTIVE AGENTS")
-                                .font(.system(size: 11, weight: .bold, design: .rounded))
-                                .foregroundColor(.secondary)
-
-                            Spacer()
-
-                            Text("\(client.activeSessions.count)")
-                                .font(.system(size: 11, weight: .semibold, design: .rounded))
-                                .foregroundColor(.secondary)
-                        }
-
-                        if client.activeSessions.isEmpty && client.waitingSessions.isEmpty {
-                            VStack(spacing: 10) {
-                                Image(systemName: "terminal.fill")
-                                    .font(.system(size: 28))
-                                    .foregroundColor(.secondary.opacity(0.4))
-
-                                Text("No agents currently running")
-                                    .font(.system(size: 13, weight: .medium, design: .rounded))
-                                    .foregroundColor(.secondary)
-
-                                Text("aw run <command>")
-                                    .font(.system(size: 11, design: .monospaced))
-                                    .foregroundColor(.secondary.opacity(0.8))
-                                    .padding(.horizontal, 10)
-                                    .padding(.vertical, 4)
-                                    .background(Color.black.opacity(0.12))
-                                    .clipShape(RoundedRectangle(cornerRadius: 6))
-                            }
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 20)
-                        } else {
-                            ForEach(client.activeSessions) { session in
-                                AgentRowView(
-                                    session: session,
-                                    onFocus: {
-                                        client.focusTerminal(for: session)
-                                    },
-                                    onTerminate: {
-                                        client.terminateSession(sessionId: session.id)
-                                    }
-                                )
-                            }
-                        }
-                    }
-
-                    // 3. RECENT HISTORY
-                    if !client.recentSessions.isEmpty {
-                        VStack(alignment: .leading, spacing: 8) {
-                            Text("RECENT HISTORY")
-                                .font(.system(size: 11, weight: .bold, design: .rounded))
-                                .foregroundColor(.secondary.opacity(0.8))
-
-                            ForEach(client.recentSessions.prefix(3)) { session in
-                                AgentRowView(
-                                    session: session,
-                                    onFocus: {
-                                        client.focusTerminal(for: session)
-                                    },
-                                    onTerminate: {}
-                                )
-                            }
-                        }
-                    }
-                }
-                .padding(16)
+                AgentSessionListView(recentLimit: 3)
+                    .padding(16)
             }
             .frame(maxHeight: 460)
 
@@ -213,6 +158,36 @@ public struct MenuBarPopoverView: View {
 
                 Spacer()
 
+                // Separate Window text button
+                Button(action: {
+                    if windowManager.isWindowOpen {
+                        windowManager.bringToFront()
+                        StatusBarController.shared.hidePopover()
+                    } else {
+                        windowManager.openDetachedWindow()
+                    }
+                }) {
+                    HStack(spacing: 5) {
+                        Image(systemName: "macwindow.on.rectangle")
+                            .font(.system(size: 11))
+                        Text(windowManager.isWindowOpen ? "Focus Window" : "Separate Window")
+                    }
+                    .font(.system(size: 11, weight: .medium, design: .rounded))
+                    .foregroundColor(.secondary)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 3)
+                    .background(Color.white.opacity(0.06))
+                    .clipShape(RoundedRectangle(cornerRadius: 5))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 5)
+                            .stroke(Color.white.opacity(0.12), lineWidth: 0.5)
+                    )
+                }
+                .buttonStyle(.plain)
+                .help("Separate into floating Apple glass window")
+
+                Spacer()
+
                 Button("Quit") {
                     NSApplication.shared.terminate(nil)
                 }
@@ -226,17 +201,5 @@ public struct MenuBarPopoverView: View {
         }
         .frame(width: 400)
         .background(.ultraThinMaterial)
-    }
-
-    private var summarySubtitle: String {
-        let waiting = client.waitingSessions.count
-        let active = client.activeSessions.count
-        if waiting > 0 {
-            return "\(waiting) waiting for input • \(active) running"
-        } else if active > 0 {
-            return "\(active) active agent\(active == 1 ? "" : "s")"
-        } else {
-            return "Ready to monitor agents"
-        }
     }
 }

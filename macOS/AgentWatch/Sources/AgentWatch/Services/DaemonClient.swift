@@ -38,6 +38,18 @@ public class DaemonClient: ObservableObject {
         sessions.filter { $0.status == .completed || $0.status == .failed || $0.status == .idle }
     }
 
+    public var summarySubtitle: String {
+        let waiting = waitingSessions.count
+        let active = activeSessions.count
+        if waiting > 0 {
+            return "\(waiting) waiting for input • \(active) running"
+        } else if active > 0 {
+            return "\(active) active agent\(active == 1 ? "" : "s")"
+        } else {
+            return "Ready to monitor agents"
+        }
+    }
+
     public init() {
         NotificationManager.shared.onInputResponse = { [weak self] sessionId, input in
             Task { @MainActor in

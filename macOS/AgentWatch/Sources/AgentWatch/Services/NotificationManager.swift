@@ -7,13 +7,19 @@ public class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
     public var onInputResponse: ((String, String) -> Void)?
     private var lastNotifiedPromptId: String?
 
+    private var isAppBundle: Bool {
+        Bundle.main.bundleURL.pathExtension == "app"
+    }
+
     private override init() {
         super.init()
+        guard isAppBundle else { return }
         UNUserNotificationCenter.current().delegate = self
         setupCategories()
     }
 
     public func requestAuthorization() {
+        guard isAppBundle else { return }
         let options: UNAuthorizationOptions = [.alert, .sound, .badge]
         UNUserNotificationCenter.current().requestAuthorization(options: options) { granted, error in
             if let error = error {
@@ -97,7 +103,9 @@ public class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
             content: content,
             trigger: trigger
         )
-        UNUserNotificationCenter.current().add(request)
+        if isAppBundle {
+            UNUserNotificationCenter.current().add(request)
+        }
 
         // 2. Guaranteed native macOS banner via AppleScript
         sendSystemBanner(
@@ -139,7 +147,13 @@ public class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
                     onInputResponse?(sessionId, reply)
                 }
             case UNNotificationDefaultActionIdentifier:
-                Task { @MainActor in StatusBarController.shared.showPopover() }
+                Task { @MainActor in
+                    if WindowManager.shared.isWindowOpen {
+                        WindowManager.shared.bringToFront()
+                    } else {
+                        StatusBarController.shared.showPopover()
+                    }
+                }
             default:
                 break
             }
