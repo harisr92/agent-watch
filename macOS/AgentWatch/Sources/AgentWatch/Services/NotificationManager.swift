@@ -113,6 +113,11 @@ public class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
             subtitle: session.directoryName.isEmpty ? "Agent Watch" : session.directoryName,
             body: prompt.promptText
         )
+
+        // 3. Play immediate audio alert
+        if NSSound(named: "Ping")?.play() != true {
+            NSSound.beep()
+        }
     }
 
     private func sendSystemBanner(title: String, subtitle: String, body: String) {

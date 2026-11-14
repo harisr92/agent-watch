@@ -146,7 +146,7 @@ public class DaemonClient: ObservableObject {
                 if let idx = sessions.firstIndex(where: { $0.id == sessionId }) {
                     sessions[idx].status = .waitingForInput
                     sessions[idx].pendingPrompt = prompt
-                    NotificationManager.shared.sendPromptNotification(session: sessions[idx], prompt: prompt)
+                    handleAgentRequest(session: sessions[idx], prompt: prompt)
                 } else {
                     let fallbackSession = AgentSession(
                         id: sessionId,
@@ -162,10 +162,9 @@ public class DaemonClient: ObservableObject {
                         recentOutput: []
                     )
                     sessions.insert(fallbackSession, at: 0)
-                    NotificationManager.shared.sendPromptNotification(session: fallbackSession, prompt: prompt)
+                    handleAgentRequest(session: fallbackSession, prompt: prompt)
                 }
                 StatusBarController.shared.updateStatusItem()
-                StatusBarController.shared.showPopover()
                 return
             }
 
@@ -176,6 +175,7 @@ public class DaemonClient: ObservableObject {
                     sessions[idx].status = .running
                     sessions[idx].pendingPrompt = nil
                 }
+                WindowManager.shared.clearInWindowNotification()
                 StatusBarController.shared.updateStatusItem()
                 return
             }
@@ -188,9 +188,31 @@ public class DaemonClient: ObservableObject {
                     sessions[idx].status = (exitCode == 0) ? .completed : .failed
                     sessions[idx].pendingPrompt = nil
                 }
+                WindowManager.shared.clearInWindowNotification()
                 StatusBarController.shared.updateStatusItem()
                 return
             }
+        }
+    }
+
+    public func handleAgentRequest(session: AgentSession, prompt: PendingPrompt) {
+        let wm = WindowManager.shared
+
+        if wm.isWindowOpen {
+            if wm.isWindowActive {
+                // Window is open and active: show the notification
+                NotificationManager.shared.sendPromptNotification(session: session, prompt: prompt)
+                wm.showInWindowNotification(session: session, prompt: prompt)
+            } else {
+                // Window is open and not active: show focus to the window
+                wm.bringToFront()
+                NotificationManager.shared.sendPromptNotification(session: session, prompt: prompt)
+                wm.showInWindowNotification(session: session, prompt: prompt)
+            }
+        } else {
+            // Window is not open: show popover and notification
+            StatusBarController.shared.showPopover()
+            NotificationManager.shared.sendPromptNotification(session: session, prompt: prompt)
         }
     }
 
@@ -207,8 +229,7 @@ public class DaemonClient: ObservableObject {
         if session.status == .waitingForInput,
            let prompt = session.pendingPrompt,
            oldStatus != .waitingForInput {
-            StatusBarController.shared.showPopover()
-            NotificationManager.shared.sendPromptNotification(session: session, prompt: prompt)
+            handleAgentRequest(session: session, prompt: prompt)
         }
     }
 

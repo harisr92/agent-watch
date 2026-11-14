@@ -43,6 +43,11 @@ public struct DetachedGlassWindowView: View {
                 // Header (with traffic lights clearance)
                 glassHeader
 
+                // In-Window Notification Alert Banner
+                if let notif = windowManager.activeNotification {
+                    inWindowNotificationBanner(notif)
+                }
+
                 Divider()
                     .opacity(0.25)
 
@@ -60,7 +65,7 @@ public struct DetachedGlassWindowView: View {
                 glassFooter
             }
         }
-        .frame(minWidth: 400, maxWidth: .infinity, minHeight: 460, maxHeight: .infinity)
+        .frame(minWidth: WindowManager.minWindowSize.width, maxWidth: .infinity, minHeight: WindowManager.minWindowSize.height, maxHeight: .infinity)
         .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: 16, style: .continuous)
@@ -88,7 +93,7 @@ public struct DetachedGlassWindowView: View {
                 .frame(width: 68)
 
             // Logo & Title
-            HStack(spacing: 10) {
+            HStack(spacing: 8) {
                 ZStack {
                     Circle()
                         .fill(
@@ -104,10 +109,12 @@ public struct DetachedGlassWindowView: View {
                         .foregroundColor(.blue)
                 }
 
-                VStack(alignment: .leading, spacing: 1) {
+                VStack(alignment: .leading, spacing: 2) {
                     HStack(spacing: 6) {
                         Text("Agent Watch")
                             .font(.system(size: 14, weight: .bold, design: .rounded))
+                            .lineLimit(1)
+                            .fixedSize(horizontal: true, vertical: false)
 
                         Text("Glass")
                             .font(.system(size: 9.5, weight: .semibold, design: .rounded))
@@ -116,18 +123,23 @@ public struct DetachedGlassWindowView: View {
                             .padding(.vertical, 1.5)
                             .background(Color.blue.opacity(0.15))
                             .clipShape(Capsule())
+                            .lineLimit(1)
+                            .fixedSize(horizontal: true, vertical: false)
                     }
 
                     Text(client.summarySubtitle)
                         .font(.system(size: 10.5, design: .rounded))
                         .foregroundColor(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
                 }
             }
+            .layoutPriority(1)
 
-            Spacer()
+            Spacer(minLength: 8)
 
             // Header Action Controls (Glass Pills)
-            HStack(spacing: 8) {
+            HStack(spacing: 6) {
                 // Connection badge
                 HStack(spacing: 5) {
                     Circle()
@@ -137,6 +149,7 @@ public struct DetachedGlassWindowView: View {
                     Text(client.isConnected ? "Live" : "Offline")
                         .font(.system(size: 11, weight: .medium, design: .rounded))
                         .foregroundColor(.secondary)
+                        .lineLimit(1)
                 }
                 .padding(.horizontal, 8)
                 .padding(.vertical, 4)
@@ -157,6 +170,7 @@ public struct DetachedGlassWindowView: View {
                         if windowManager.isAlwaysOnTop {
                             Text("Pinned")
                                 .font(.system(size: 10.5, weight: .semibold, design: .rounded))
+                                .lineLimit(1)
                         }
                     }
                     .foregroundColor(windowManager.isAlwaysOnTop ? .blue : .secondary)
@@ -190,6 +204,7 @@ public struct DetachedGlassWindowView: View {
                             .font(.system(size: 11, weight: .semibold))
                         Text("Dock")
                             .font(.system(size: 10.5, weight: .medium, design: .rounded))
+                            .lineLimit(1)
                     }
                     .foregroundColor(.primary.opacity(0.85))
                     .padding(.horizontal, 8)
@@ -210,6 +225,7 @@ public struct DetachedGlassWindowView: View {
                     }
                     .buttonStyle(.borderedProminent)
                     .controlSize(.small)
+                    .lineLimit(1)
                 }
             }
         }
@@ -223,6 +239,71 @@ public struct DetachedGlassWindowView: View {
                 endPoint: .bottom
             )
         )
+    }
+
+    // MARK: - In-Window Notification Alert Banner
+    private func inWindowNotificationBanner(_ notification: InWindowNotification) -> some View {
+        HStack(spacing: 10) {
+            ZStack {
+                Circle()
+                    .fill(Color.orange.opacity(0.25))
+                    .frame(width: 26, height: 26)
+                Image(systemName: "exclamationmark.bubble.fill")
+                    .font(.system(size: 12, weight: .bold))
+                    .foregroundColor(.orange)
+            }
+
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 6) {
+                    Text(notification.sessionName)
+                        .font(.system(size: 12, weight: .bold, design: .rounded))
+                    Text("•")
+                        .font(.caption2)
+                        .foregroundColor(.secondary.opacity(0.6))
+                    Text(notification.promptHeadline)
+                        .font(.system(size: 11, weight: .semibold, design: .rounded))
+                        .foregroundColor(.orange)
+                }
+
+                Text(notification.promptText)
+                    .font(.system(size: 11, design: .rounded))
+                    .foregroundColor(.secondary)
+                    .lineLimit(1)
+            }
+
+            Spacer()
+
+            Button(action: {
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    windowManager.clearInWindowNotification()
+                }
+            }) {
+                Image(systemName: "xmark")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundColor(.secondary)
+                    .padding(5)
+                    .background(Color.white.opacity(0.08))
+                    .clipShape(Circle())
+            }
+            .buttonStyle(.plain)
+            .help("Dismiss notification")
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 8)
+        .background(
+            RoundedRectangle(cornerRadius: 10)
+                .fill(Color.orange.opacity(0.12))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 10)
+                .stroke(Color.orange.opacity(0.35), lineWidth: 0.8)
+        )
+        .padding(.horizontal, 16)
+        .padding(.vertical, 6)
+        .transition(.asymmetric(
+            insertion: .move(edge: .top).combined(with: .opacity),
+            removal: .opacity
+        ))
     }
 
     // MARK: - Footer
