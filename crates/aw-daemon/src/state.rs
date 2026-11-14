@@ -89,7 +89,7 @@ impl AppState {
 
             // If not currently waiting for input, test if prompt is detected
             if active.session.status != AgentStatus::WaitingForInput {
-                let tail_text = active.buffer.get_tail(5).join("\n");
+                let tail_text = active.buffer.get_tail(30).join("\n");
                 if let Some(prompt) = self.detector.detect_prompt(session_id, &tail_text) {
                     active.session.status = AgentStatus::WaitingForInput;
                     active.session.pending_prompt = Some(prompt.clone());

@@ -108,22 +108,26 @@ impl PromptDetector {
     pub fn detect_prompt(&self, session_id: &str, recent_text: &str) -> Option<PendingPrompt> {
         let cleaned = Self::clean_text(recent_text.as_bytes());
         // Drop box-drawing frames and blank lines so framed TUI menus read like plain ones.
-        let lines: Vec<&str> = cleaned
+        let trimmed_lines: Vec<&str> = cleaned
             .lines()
             .map(|l| {
                 l.trim_matches(|c: char| {
                     c.is_whitespace() || ('\u{2500}'..='\u{257F}').contains(&c) || c == '|'
                 })
             })
+            .collect();
+        let lines: Vec<&str> = trimmed_lines
+            .iter()
+            .copied()
             .filter(|l| !l.is_empty())
             .collect();
         let last_line = *lines.last()?;
 
         // 1. Multi-line menus (numbered/lettered lists, arrow-key lists)
-        if let Some(p) = self.detect_keyed_menu(session_id, &lines) {
+        if let Some(p) = self.detect_keyed_menu(session_id, &lines, &trimmed_lines) {
             return Some(p);
         }
-        if let Some(p) = self.detect_arrow_menu(session_id, &lines) {
+        if let Some(p) = self.detect_arrow_menu(session_id, &lines, &trimmed_lines) {
             return Some(p);
         }
 
@@ -257,7 +261,12 @@ impl PromptDetector {
     ///   2. Yes, allow all edits this session
     ///   3. No
     /// ```
-    fn detect_keyed_menu(&self, session_id: &str, lines: &[&str]) -> Option<PendingPrompt> {
+    fn detect_keyed_menu(
+        &self,
+        session_id: &str,
+        lines: &[&str],
+        trimmed_lines: &[&str],
+    ) -> Option<PendingPrompt> {
         // Up to three lines may follow the options: an input prompt and/or key hints.
         let mut end = lines.len();
         while end > 0 && lines.len() - end < 3 && self.parse_option_line(lines[end - 1]).is_none() {
@@ -289,10 +298,34 @@ impl PromptDetector {
             return None;
         }
 
-        let question = if start > 0 {
-            lines[start - 1]
+        let first_opt = lines[start];
+        let first_opt_idx = trimmed_lines
+            .iter()
+            .rposition(|&l| l == first_opt)
+            .unwrap_or(0);
+
+        let mut preamble: Vec<&str> = Vec::new();
+        let mut started = false;
+        for i in (0..first_opt_idx).rev() {
+            let line = trimmed_lines[i];
+            if line.is_empty() {
+                if started {
+                    break;
+                }
+                continue;
+            }
+            started = true;
+            preamble.push(line);
+            if preamble.len() >= 10 {
+                break;
+            }
+        }
+        preamble.reverse();
+
+        let question = if !preamble.is_empty() {
+            preamble.join("\n")
         } else {
-            trailing_prompt.unwrap_or("Select an option")
+            trailing_prompt.unwrap_or("Select an option").to_string()
         };
 
         let choices = options
@@ -315,7 +348,12 @@ impl PromptDetector {
     /// ```
     ///
     /// Each choice's value is the arrow presses needed to reach it, followed by Enter.
-    fn detect_arrow_menu(&self, session_id: &str, lines: &[&str]) -> Option<PendingPrompt> {
+    fn detect_arrow_menu(
+        &self,
+        session_id: &str,
+        lines: &[&str],
+        trimmed_lines: &[&str],
+    ) -> Option<PendingPrompt> {
         let is_cursor_line = |l: &str| l.starts_with(CURSOR_GLYPHS);
         let window_start = lines.len().saturating_sub(12);
         let cursor_idx = (window_start..lines.len())
@@ -354,7 +392,26 @@ impl PromptDetector {
             })
             .collect();
 
-        let question = lines[question_idx].trim_start_matches(['?', ' ']);
+        let q_line = lines[question_idx].trim_start_matches(['?', ' ']);
+        let q_idx = trimmed_lines
+            .iter()
+            .rposition(|&l| l == lines[question_idx])
+            .unwrap_or(0);
+        let mut preamble: Vec<&str> = Vec::new();
+        for i in (0..q_idx).rev() {
+            let line = trimmed_lines[i];
+            if line.is_empty() {
+                break;
+            }
+            preamble.push(line.trim_start_matches(['?', ' ']));
+            if preamble.len() >= 10 {
+                break;
+            }
+        }
+        preamble.reverse();
+        preamble.push(q_line);
+        let question = preamble.join("\n");
+
         let mut prompt = PendingPrompt::new(session_id, question, PromptType::Select, choices);
         prompt.press_enter = false;
         Some(prompt)
@@ -471,7 +528,10 @@ mod tests {
         let text = "Analysis done.\nHow should I apply the migration?\n  1) Apply now\n  2) Dry run first\n  3) Skip\nEnter your choice [1-3]: ";
         let p = detector.detect_prompt("s", text).expect("menu");
         assert_eq!(p.prompt_type, PromptType::Select);
-        assert_eq!(p.prompt_text, "How should I apply the migration?");
+        assert_eq!(
+            p.prompt_text,
+            "Analysis done.\nHow should I apply the migration?"
+        );
         assert_eq!(labels(&p), vec!["Apply now", "Dry run first", "Skip"]);
         assert_eq!(p.options, vec!["1", "2", "3"]);
         assert!(p.press_enter);
@@ -496,10 +556,35 @@ mod tests {
         // End-to-end with the rolling buffer the daemon uses, fed raw PTY output.
         let mut buf = crate::buffer::RollingOutputBuffer::new(30);
         buf.append("\x1b[1;35m[MenuAgent]\x1b[0m Planning database migration...\r\nHow should I apply the migration?\r\n  1) Apply now\r\n  2) Dry run first\r\n  3) Skip this step\r\nEnter your choice [1-3]: ");
-        let tail = buf.get_tail(5).join("\n");
+        let tail = buf.get_tail(30).join("\n");
         let p = PromptDetector::new().detect_prompt("s", &tail).expect("menu");
-        assert_eq!(p.prompt_text, "How should I apply the migration?");
+        assert_eq!(
+            p.prompt_text,
+            "[MenuAgent] Planning database migration...\nHow should I apply the migration?"
+        );
         assert_eq!(labels(&p), vec!["Apply now", "Dry run first", "Skip this step"]);
+    }
+
+    #[test]
+    fn test_menu_stops_at_blank_line() {
+        let detector = PromptDetector::new();
+        let text = "Build finished in 2.3s\n\n[MenuAgent] Planning database migration...\nHow should I apply the migration?\n  1) Apply now\n  2) Dry run first\n  3) Skip\nEnter your choice [1-3]: ";
+        let p = detector.detect_prompt("s", text).expect("menu");
+        assert_eq!(
+            p.prompt_text,
+            "[MenuAgent] Planning database migration...\nHow should I apply the migration?"
+        );
+    }
+
+    #[test]
+    fn test_menu_with_blank_line_before_options() {
+        let detector = PromptDetector::new();
+        let text = "[MenuAgent] Planning database migration...\nHow should I apply the migration?\n\n  1) Apply now\n  2) Dry run first\n  3) Skip\nEnter your choice [1-3]: ";
+        let p = detector.detect_prompt("s", text).expect("menu");
+        assert_eq!(
+            p.prompt_text,
+            "[MenuAgent] Planning database migration...\nHow should I apply the migration?"
+        );
     }
 
     #[test]

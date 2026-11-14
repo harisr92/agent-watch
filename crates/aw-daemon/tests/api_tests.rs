@@ -267,6 +267,47 @@ async fn test_menu_prompt_exposes_choices_and_keeps_press_enter() {
 }
 
 #[tokio::test]
+async fn test_mock_menu_agent_output_communicates_entire_message() {
+    let state = AppState::new();
+    let app = create_router(state.clone());
+
+    post_json(
+        &app,
+        "/api/v1/sessions/register",
+        json!({ "id": "menu-agent", "name": "mock_menu_agent.py", "command": "python3", "args": ["scripts/mock_menu_agent.py"], "cwd": "/tmp", "pid": null }),
+    )
+    .await;
+
+    // Simulate chunk 1 from mock_menu_agent.py
+    post_json(
+        &app,
+        "/api/v1/sessions/menu-agent/output",
+        json!({ "chunk": "\x1b[1;35m[MenuAgent]\x1b[0m Planning database migration...\r\n" }),
+    )
+    .await;
+
+    // Simulate chunk 2 from mock_menu_agent.py (options and ask prompt)
+    post_json(
+        &app,
+        "/api/v1/sessions/menu-agent/output",
+        json!({ "chunk": "How should I apply the migration?\r\n  1) Apply now\r\n  2) Dry run first\r\n  3) Skip this step\r\nEnter your choice [1-3]: " }),
+    )
+    .await;
+
+    let session = state.get_session("menu-agent").await.expect("session");
+    let prompt = session.pending_prompt.expect("prompt detected");
+    assert_eq!(prompt.prompt_type, PromptType::Select);
+    assert_eq!(
+        prompt.prompt_text,
+        "[MenuAgent] Planning database migration...\nHow should I apply the migration?"
+    );
+    let labels: Vec<_> = prompt.choices.iter().map(|c| c.label.as_str()).collect();
+    assert_eq!(labels, vec!["Apply now", "Dry run first", "Skip this step"]);
+    assert_eq!(prompt.options, vec!["1", "2", "3"]);
+    assert!(prompt.press_enter);
+}
+
+#[tokio::test]
 async fn test_registered_prompt_with_options_is_select() {
     let state = AppState::new();
     let app = create_router(state.clone());
