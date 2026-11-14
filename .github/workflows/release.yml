@@ -1,0 +1,42 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build-release:
+    name: Build & Publish Release Artifacts
+    runs-on: macos-14
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Install Rust Toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build and Package Release App & CLI
+        run: ./scripts/package_app.sh
+
+      - name: Create Zip Archives
+        run: |
+          VERSION="${GITHUB_REF_NAME}"
+          cd dist
+          zip -r "AgentWatch-${VERSION}-macOS.zip" AgentWatch.app
+          cd ..
+          cp target/release/aw "aw-${VERSION}-darwin-arm64"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/AgentWatch-*-macOS.zip
+            aw-*-darwin-arm64
+          generate_release_notes: true

@@ -1,0 +1,76 @@
+name: CI
+
+on:
+  push:
+    branches: [ trunk, main ]
+  pull_request:
+    branches: [ trunk, main ]
+
+jobs:
+  rust-tests:
+    name: Rust Workspace Tests
+    runs-on: macos-14
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Install Rust Toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Check Formatting
+        run: cargo fmt --all -- --check
+
+      - name: Run Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Run Tests
+        run: cargo test --workspace --verbose
+
+  swift-tests:
+    name: Swift macOS App Tests
+    runs-on: macos-14
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Select Xcode
+        run: sudo xcode-select -s /Applications/Xcode_15.4.app || true
+
+      - name: Run Swift Package Tests
+        run: |
+          cd macOS/AgentWatch
+          swift test --verbose
+
+      - name: Build Release Swift App
+        run: |
+          cd macOS/AgentWatch
+          swift build -c release
+
+  package-verification:
+    name: Package App & CLI Bundle
+    runs-on: macos-14
+    needs: [rust-tests, swift-tests]
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Install Rust Toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Run Packaging Script
+        run: ./scripts/package_app.sh
+
+      - name: Verify Bundle Outputs
+        run: |
+          test -f dist/AgentWatch.app/Contents/MacOS/AgentWatch
+          test -f dist/AgentWatch.app/Contents/MacOS/aw
+          test -f target/release/aw
+          echo "✅ Packaging verification successful!"
