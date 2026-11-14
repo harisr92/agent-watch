@@ -86,7 +86,10 @@ pub async fn run_with_pty(config: PtyRunnerConfig) -> Result<i32> {
     let daemon_available = if ensure_daemon_running(&config.daemon_url).await {
         match client.post(&reg_url).json(&reg_req).send().await {
             Ok(resp) if resp.status().is_success() => {
-                info!("Registered with Agent Watch daemon at {}", config.daemon_url);
+                info!(
+                    "Registered with Agent Watch daemon at {}",
+                    config.daemon_url
+                );
                 true
             }
             _ => false,
@@ -139,14 +142,12 @@ pub async fn run_with_pty(config: PtyRunnerConfig) -> Result<i32> {
                     if let Some(Ok(tokio_tungstenite::tungstenite::Message::Text(txt))) =
                         read.next().await
                     {
-                        if let Ok(event) = serde_json::from_str::<AgentEvent>(&txt) {
-                            if let AgentEvent::PromptResolved {
-                                session_id, input, ..
-                            } = event
-                            {
-                                if session_id == target_session_id {
-                                    let _ = input_tx_clone.send(input).await;
-                                }
+                        if let Ok(AgentEvent::PromptResolved {
+                            session_id, input, ..
+                        }) = serde_json::from_str::<AgentEvent>(&txt)
+                        {
+                            if session_id == target_session_id {
+                                let _ = input_tx_clone.send(input).await;
                             }
                         }
                     }

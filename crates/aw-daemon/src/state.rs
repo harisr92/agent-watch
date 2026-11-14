@@ -216,12 +216,18 @@ impl AppState {
     pub async fn get_all_sessions(&self) -> Vec<AgentSession> {
         let lock = self.sessions.read().await;
         let mut list: Vec<AgentSession> = lock.values().map(|a| a.session.clone()).collect();
-        list.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+        list.sort_by_key(|a| std::cmp::Reverse(a.updated_at));
         list
     }
 
     pub async fn get_session(&self, session_id: &str) -> Option<AgentSession> {
         let lock = self.sessions.read().await;
         lock.get(session_id).map(|a| a.session.clone())
+    }
+}
+
+impl Default for AppState {
+    fn default() -> Self {
+        Self::new()
     }
 }

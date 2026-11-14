@@ -15,6 +15,11 @@ let package = Package(
             name: "AgentWatch",
             dependencies: [],
             path: "Sources/AgentWatch"
+        ),
+        .testTarget(
+            name: "AgentWatchTests",
+            dependencies: ["AgentWatch"],
+            path: "Tests/AgentWatchTests"
         )
     ]
 )

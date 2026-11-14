@@ -83,11 +83,26 @@ async fn main() -> Result<()> {
             aw_daemon::run_server(state, addr).await?;
         }
 
-        Commands::Run { name, command, args } => {
-            let session_id = format!("agent-{}", Uuid::new_v4().to_string().chars().take(8).collect::<String>());
+        Commands::Run {
+            name,
+            command,
+            args,
+        } => {
+            let session_id = format!(
+                "agent-{}",
+                Uuid::new_v4()
+                    .to_string()
+                    .chars()
+                    .take(8)
+                    .collect::<String>()
+            );
             let session_name = name.unwrap_or_else(|| {
                 let cmd_file = PathBuf::from(&command);
-                cmd_file.file_name().and_then(|f| f.to_str()).unwrap_or(&command).to_string()
+                cmd_file
+                    .file_name()
+                    .and_then(|f| f.to_str())
+                    .unwrap_or(&command)
+                    .to_string()
             });
 
             let cwd = std::env::current_dir()?.to_string_lossy().to_string();
@@ -111,14 +126,21 @@ async fn main() -> Result<()> {
         Commands::List => {
             let daemon_url = aw_core::get_api_base_url();
             let client = reqwest::Client::new();
-            match client.get(format!("{}/api/v1/sessions", daemon_url)).send().await {
+            match client
+                .get(format!("{}/api/v1/sessions", daemon_url))
+                .send()
+                .await
+            {
                 Ok(resp) => {
                     let sessions: Vec<AgentSession> = resp.json().await?;
                     if sessions.is_empty() {
                         println!("No active or recent agent sessions found.");
                         println!("💡 Run an agent with: aw run <command>");
                     } else {
-                        println!("{:<14} {:<16} {:<18} {:<30}", "ID", "NAME", "STATUS", "COMMAND");
+                        println!(
+                            "{:<14} {:<16} {:<18} {:<30}",
+                            "ID", "NAME", "STATUS", "COMMAND"
+                        );
                         println!("{}", "-".repeat(80));
                         for s in sessions {
                             let status_str = match s.status {
@@ -134,7 +156,10 @@ async fn main() -> Result<()> {
                             } else {
                                 cmd_display
                             };
-                            println!("{:<14} {:<16} {:<18} {:<30}", s.id, s.name, status_str, truncated_cmd);
+                            println!(
+                                "{:<14} {:<16} {:<18} {:<30}",
+                                s.id, s.name, status_str, truncated_cmd
+                            );
                             if let Some(prompt) = s.pending_prompt {
                                 println!("   └── 🔔 Prompt: {}", prompt.prompt_text);
                             }
@@ -164,17 +189,28 @@ async fn main() -> Result<()> {
                 }
             });
 
-            match client.post(format!("{}/mcp", daemon_url)).json(&mcp_req).send().await {
+            match client
+                .post(format!("{}/mcp", daemon_url))
+                .json(&mcp_req)
+                .send()
+                .await
+            {
                 Ok(resp) => {
                     let res: serde_json::Value = resp.json().await?;
-                    if let Some(text) = res.get("result")
+                    if let Some(text) = res
+                        .get("result")
                         .and_then(|r| r.get("content"))
                         .and_then(|c| c.as_array())
                         .and_then(|arr| arr.first())
                         .and_then(|item| item.get("text"))
-                        .and_then(|t| t.as_str()) {
+                        .and_then(|t| t.as_str())
+                    {
                         println!("{}", text);
-                    } else if let Some(err) = res.get("error").and_then(|e| e.get("message")).and_then(|m| m.as_str()) {
+                    } else if let Some(err) = res
+                        .get("error")
+                        .and_then(|e| e.get("message"))
+                        .and_then(|m| m.as_str())
+                    {
                         eprintln!("Error: {}", err);
                         std::process::exit(1);
                     }
@@ -193,7 +229,11 @@ async fn main() -> Result<()> {
                 input: text,
                 press_enter: true,
             };
-            let resp = client.post(format!("{}/api/v1/sessions/{}/input", daemon_url, session_id))
+            let resp = client
+                .post(format!(
+                    "{}/api/v1/sessions/{}/input",
+                    daemon_url, session_id
+                ))
                 .json(&req)
                 .send()
                 .await?;

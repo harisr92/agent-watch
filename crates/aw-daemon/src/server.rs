@@ -1,7 +1,5 @@
 use crate::state::AppState;
-use aw_core::models::{
-    AgentSession, PromptType, RegisterSessionRequest, UserInputRequest,
-};
+use aw_core::models::{AgentSession, PromptType, RegisterSessionRequest, UserInputRequest};
 use axum::{
     extract::{
         ws::{Message, WebSocket, WebSocketUpgrade},
@@ -98,7 +96,9 @@ async fn register_prompt(
     Json(payload): Json<PromptPayload>,
 ) -> Result<Json<Value>, StatusCode> {
     let prompt_type = payload.prompt_type.unwrap_or(PromptType::Confirm);
-    let options = payload.options.unwrap_or_else(|| vec!["y".into(), "n".into()]);
+    let options = payload
+        .options
+        .unwrap_or_else(|| vec!["y".into(), "n".into()]);
     match state
         .register_prompt(&id, payload.prompt_text, prompt_type, options)
         .await
@@ -134,10 +134,7 @@ async fn terminate_session(
     StatusCode::OK
 }
 
-async fn ws_handler(
-    ws: WebSocketUpgrade,
-    State(state): State<AppState>,
-) -> impl IntoResponse {
+async fn ws_handler(ws: WebSocketUpgrade, State(state): State<AppState>) -> impl IntoResponse {
     ws.on_upgrade(move |socket| handle_ws(socket, state))
 }
 
@@ -200,10 +197,7 @@ async fn handle_ws(socket: WebSocket, state: AppState) {
 }
 
 // MCP (Model Context Protocol) JSON-RPC handler
-async fn mcp_handler(
-    State(state): State<AppState>,
-    Json(payload): Json<Value>,
-) -> Json<Value> {
+async fn mcp_handler(State(state): State<AppState>, Json(payload): Json<Value>) -> Json<Value> {
     let id = payload.get("id").cloned().unwrap_or(Value::Null);
     let method = payload.get("method").and_then(|m| m.as_str()).unwrap_or("");
 
@@ -244,29 +238,53 @@ async fn mcp_handler(
         })),
         "tools/call" => {
             let params = payload.get("params");
-            let tool_name = params.and_then(|p| p.get("name")).and_then(|n| n.as_str()).unwrap_or("");
-            let arguments = params.and_then(|p| p.get("arguments")).cloned().unwrap_or(Value::Null);
+            let tool_name = params
+                .and_then(|p| p.get("name"))
+                .and_then(|n| n.as_str())
+                .unwrap_or("");
+            let arguments = params
+                .and_then(|p| p.get("arguments"))
+                .cloned()
+                .unwrap_or(Value::Null);
 
             if tool_name == "request_user_input" {
-                let prompt_text = arguments.get("prompt").and_then(|p| p.as_str()).unwrap_or("Input required").to_string();
-                let session_name = arguments.get("session_name").and_then(|s| s.as_str()).unwrap_or("MCP Agent").to_string();
-                let options = arguments.get("options")
+                let prompt_text = arguments
+                    .get("prompt")
+                    .and_then(|p| p.as_str())
+                    .unwrap_or("Input required")
+                    .to_string();
+                let session_name = arguments
+                    .get("session_name")
+                    .and_then(|s| s.as_str())
+                    .unwrap_or("MCP Agent")
+                    .to_string();
+                let options = arguments
+                    .get("options")
                     .and_then(|o| o.as_array())
-                    .map(|arr| arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                            .collect()
+                    })
                     .unwrap_or_else(|| vec!["y".to_string(), "n".to_string()]);
 
                 let session_id = format!("mcp-{}", uuid::Uuid::new_v4());
                 let prompt_id = uuid::Uuid::new_v4().to_string();
 
                 // Register session & prompt
-                let _ = state.register_session(RegisterSessionRequest {
-                    id: session_id.clone(),
-                    name: session_name,
-                    command: "mcp-agent".into(),
-                    args: vec![],
-                    cwd: ".".into(),
-                    pid: None,
-                }, None).await;
+                let _ = state
+                    .register_session(
+                        RegisterSessionRequest {
+                            id: session_id.clone(),
+                            name: session_name,
+                            command: "mcp-agent".into(),
+                            args: vec![],
+                            cwd: ".".into(),
+                            pid: None,
+                        },
+                        None,
+                    )
+                    .await;
 
                 let (tx, rx) = oneshot::channel();
                 {
@@ -276,7 +294,14 @@ async fn mcp_handler(
                     }
                 }
 
-                let _ = state.register_prompt(&session_id, prompt_text.clone(), PromptType::Confirm, options).await;
+                let _ = state
+                    .register_prompt(
+                        &session_id,
+                        prompt_text.clone(),
+                        PromptType::Confirm,
+                        options,
+                    )
+                    .await;
 
                 // Wait for response or timeout after 5 minutes
                 match tokio::time::timeout(Duration::from_secs(300), rx).await {
@@ -305,11 +330,19 @@ async fn mcp_handler(
                     }
                 }
             } else if tool_name == "report_status" {
-                let message = arguments.get("message").and_then(|m| m.as_str()).unwrap_or("");
-                let session_name = arguments.get("session_name").and_then(|s| s.as_str()).unwrap_or("MCP Agent");
+                let message = arguments
+                    .get("message")
+                    .and_then(|m| m.as_str())
+                    .unwrap_or("");
+                let session_name = arguments
+                    .get("session_name")
+                    .and_then(|s| s.as_str())
+                    .unwrap_or("MCP Agent");
                 let session_id = format!("mcp-{}", session_name.to_lowercase().replace(' ', "-"));
-                
-                state.append_output(&session_id, &format!("[Status] {}\n", message)).await;
+
+                state
+                    .append_output(&session_id, &format!("[Status] {}\n", message))
+                    .await;
 
                 Json(json!({
                     "jsonrpc": "2.0",

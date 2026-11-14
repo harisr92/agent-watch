@@ -27,3 +27,5 @@ anyhow = "1.0"
 thiserror = "1.0"
 reqwest = { version = "0.12", features = ["json"] }
 crossterm = "0.28"
+tower = { version = "0.5", features = ["util"] }
+http-body-util = "0.1"
