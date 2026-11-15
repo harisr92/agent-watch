@@ -107,15 +107,15 @@ impl AppState {
             if waiting {
                 // Only ever refine a pending prompt, never drop it: spinners or screen redraws
                 // while the agent waits must not make a real question vanish. The exception is
-                // an idle chat box: it stays drawn while idle, so once it is gone or busy, the
-                // user has answered from the terminal.
+                // an idle chat box (it stays drawn while idle, so once it is gone the user has
+                // answered from the terminal) and a busy agent, which is not waiting at all.
                 let Some(mut prompt) = detected else {
                     let was_chat_input = active
                         .session
                         .pending_prompt
                         .as_ref()
                         .is_some_and(|p| p.prompt_text == CHAT_INPUT_PROMPT);
-                    if was_chat_input {
+                    if was_chat_input || PromptDetector::is_busy(&tail_text) {
                         active.session.status = AgentStatus::Running;
                         active.session.pending_prompt = None;
                         active.prompt_auto_detected = false;

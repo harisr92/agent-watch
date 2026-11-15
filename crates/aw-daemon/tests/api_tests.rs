@@ -607,3 +607,66 @@ async fn test_clear_history_removes_only_finished_sessions() {
     }
     assert!(saw_cleared, "expected a history_cleared event");
 }
+
+#[tokio::test]
+async fn test_busy_agent_diff_output_raises_no_prompt() {
+    // Claude Code in auto mode printing an edit: no input is needed, so no prompt (and no
+    // notification) may be raised, even though a diff line contains a '?'.
+    let state = AppState::new();
+    let mut events = state.events_tx.subscribe();
+    let app = create_router(state.clone());
+    post_json(
+        &app,
+        "/api/v1/sessions/register",
+        json!({ "id": "busy", "name": "claude", "command": "claude", "args": [], "cwd": "/tmp", "pid": null }),
+    )
+    .await;
+    post_json(
+        &app,
+        "/api/v1/sessions/busy/output",
+        json!({ "chunk": "\u{23fa} Update(src/Picker.test.tsx)\r\n       185      it(\"focuses the picker?\", () => {\r\n       186 -      expect(screen.getByRole(\"combobox\", { name: /Pick one/ })).toHaveFocus();\r\n       187 +      expect(screen.getByRole(\"combobox\", { name: \"Pick one\" })).toHaveFocus();\r\n\r\n\u{273b} Crafting\u{2026} (8s \u{b7} esc to interrupt)\r\n\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\r\n\u{276f} \r\n\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\r\n" }),
+    )
+    .await;
+
+    let session = state.get_session("busy").await.expect("session");
+    assert_eq!(session.status, AgentStatus::Running);
+    assert!(session.pending_prompt.is_none());
+    while let Ok(event) = events.try_recv() {
+        assert!(
+            !matches!(event, AgentEvent::PromptRequired { .. }),
+            "unexpected prompt: {event:?}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn test_auto_detected_prompt_cleared_when_agent_gets_busy() {
+    // A prompt answered in the terminal: the agent goes back to work, so the pending
+    // auto-detected prompt must not linger in the menu bar.
+    let state = AppState::new();
+    let app = create_router(state.clone());
+    post_json(
+        &app,
+        "/api/v1/sessions/register",
+        json!({ "id": "answered", "name": "agent", "command": "agent", "args": [], "cwd": "/tmp", "pid": null }),
+    )
+    .await;
+    post_json(
+        &app,
+        "/api/v1/sessions/answered/output",
+        json!({ "chunk": "Overwrite existing file? [y/n/a/q] " }),
+    )
+    .await;
+    let session = state.get_session("answered").await.expect("session");
+    assert_eq!(session.status, AgentStatus::WaitingForInput);
+
+    post_json(
+        &app,
+        "/api/v1/sessions/answered/output",
+        json!({ "chunk": "y\r\nWorking (2s \u{2022} esc to interrupt)\r\n" }),
+    )
+    .await;
+    let session = state.get_session("answered").await.expect("session");
+    assert_eq!(session.status, AgentStatus::Running);
+    assert!(session.pending_prompt.is_none());
+}
