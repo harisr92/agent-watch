@@ -229,7 +229,8 @@ public class DaemonClient: ObservableObject {
     }
 
     private func updateOrInsertSession(_ session: AgentSession) {
-        let oldStatus = sessions.first(where: { $0.id == session.id })?.status
+        let old = sessions.first(where: { $0.id == session.id })
+        let oldStatus = old?.status
         if let index = sessions.firstIndex(where: { $0.id == session.id }) {
             sessions[index] = session
         } else {
@@ -242,6 +243,10 @@ public class DaemonClient: ObservableObject {
            let prompt = session.pendingPrompt,
            oldStatus != .waitingForInput {
             handleAgentRequest(session: session, prompt: prompt)
+        }
+
+        if AgentActivity.finishedTurn(from: old?.activity, to: session.activity) {
+            NotificationManager.shared.sendDoneNotification(session: session)
         }
     }
 

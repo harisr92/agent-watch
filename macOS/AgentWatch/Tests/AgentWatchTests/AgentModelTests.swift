@@ -95,6 +95,42 @@ final class AgentModelTests: XCTestCase {
         XCTAssertEqual(json?["press_enter"] as? Bool, true)
     }
 
+    func testActivityDecodingAndDisplay() throws {
+        func session(status: String, extra: String) throws -> AgentSession {
+            let json = """
+            {"id": "s", "name": "claude", "command": "claude", "args": [], "cwd": "/tmp/app",
+             "pid": null, "status": "\(status)", "pending_prompt": null,
+             "started_at": "", "updated_at": "", "recent_output": []\(extra)}
+            """
+            return try JSONDecoder().decode(AgentSession.self, from: Data(json.utf8))
+        }
+
+        let working = try session(status: "running", extra: #", "activity": "working", "task_title": "Fix bug""#)
+        XCTAssertEqual(working.activity, .working)
+        XCTAssertEqual(working.taskTitle, "Fix bug")
+        XCTAssertEqual(working.statusDisplayName, "Working")
+
+        let done = try session(status: "waiting_for_input", extra: #", "activity": "done""#)
+        XCTAssertEqual(done.statusDisplayName, "Done")
+
+        // Older daemons send no activity; exited sessions show their process status.
+        let legacy = try session(status: "running", extra: "")
+        XCTAssertNil(legacy.activity)
+        XCTAssertNil(legacy.taskTitle)
+        XCTAssertEqual(legacy.statusDisplayName, "Running")
+        let exited = try session(status: "completed", extra: #", "activity": "working""#)
+        XCTAssertEqual(exited.statusDisplayName, "Completed")
+    }
+
+    func testFinishedTurnOnlyOnTransitionToDone() {
+        XCTAssertTrue(AgentActivity.finishedTurn(from: .working, to: .done))
+        XCTAssertTrue(AgentActivity.finishedTurn(from: .waiting, to: .done))
+        XCTAssertFalse(AgentActivity.finishedTurn(from: .done, to: .done))
+        XCTAssertFalse(AgentActivity.finishedTurn(from: nil, to: .done))
+        XCTAssertFalse(AgentActivity.finishedTurn(from: .working, to: .waiting))
+        XCTAssertFalse(AgentActivity.finishedTurn(from: .working, to: nil))
+    }
+
     func testStatusAttributes() {
         XCTAssertEqual(AgentStatus.running.displayName, "Running")
         XCTAssertEqual(AgentStatus.waitingForInput.displayName, "Needs Input")

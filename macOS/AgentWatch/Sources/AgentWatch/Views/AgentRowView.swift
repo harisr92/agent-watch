@@ -13,10 +13,10 @@ public struct AgentRowView: View {
                 // Pulsing Status Dot
                 ZStack {
                     Circle()
-                        .fill(session.status.color.opacity(0.25))
+                        .fill(session.statusColor.opacity(0.25))
                         .frame(width: 18, height: 18)
                     Circle()
-                        .fill(session.status.color)
+                        .fill(session.statusColor)
                         .frame(width: 8, height: 8)
                 }
 
@@ -43,12 +43,12 @@ public struct AgentRowView: View {
                 Spacer()
 
                 // Status chip
-                Text(session.status.displayName)
+                Text(session.statusDisplayName)
                     .font(.system(size: 10, weight: .semibold, design: .rounded))
                     .padding(.horizontal, 7)
                     .padding(.vertical, 3)
-                    .background(session.status.color.opacity(0.15))
-                    .foregroundColor(session.status.color)
+                    .background(session.statusColor.opacity(0.15))
+                    .foregroundColor(session.statusColor)
                     .clipShape(Capsule())
 
                 // Expand terminal logs button

@@ -39,6 +39,36 @@ public enum AgentStatus: String, Codable {
     }
 }
 
+/// What the agent is doing within a session, as a terminal tab header shows it. Only sent for
+/// agents that report it through their terminal title (e.g. Claude Code).
+public enum AgentActivity: String, Codable {
+    case working
+    case waiting
+    case done
+
+    public var displayName: String {
+        switch self {
+        case .working: return "Working"
+        case .waiting: return "Waiting"
+        case .done: return "Done"
+        }
+    }
+
+    public var color: Color {
+        switch self {
+        case .working: return .blue
+        case .waiting: return .orange
+        case .done: return .green
+        }
+    }
+
+    /// True when an update means the agent just finished a turn (worked, then stopped at its
+    /// idle prompt), which is worth a "done" notification.
+    public static func finishedTurn(from old: AgentActivity?, to new: AgentActivity?) -> Bool {
+        new == .done && (old == .working || old == .waiting)
+    }
+}
+
 public enum PromptType: String, Codable {
     case confirm
     case text
@@ -141,6 +171,9 @@ public struct AgentSession: Identifiable, Codable {
     public let startedAt: String
     public var updatedAt: String
     public var recentOutput: [String]
+    public var activity: AgentActivity? = nil
+    /// Task name the agent shows in its terminal title, e.g. "Fix login bug".
+    public var taskTitle: String? = nil
 
     enum CodingKeys: String, CodingKey {
         case id
@@ -154,11 +187,22 @@ public struct AgentSession: Identifiable, Codable {
         case startedAt = "started_at"
         case updatedAt = "updated_at"
         case recentOutput = "recent_output"
+        case activity
+        case taskTitle = "task_title"
     }
 
     public var directoryName: String {
         URL(fileURLWithPath: cwd).lastPathComponent
     }
+
+    /// Working / Waiting / Done while a live agent reports it, otherwise the process status.
+    private var liveActivity: AgentActivity? {
+        status == .running || status == .waitingForInput ? activity : nil
+    }
+
+    public var statusDisplayName: String { liveActivity?.displayName ?? status.displayName }
+
+    public var statusColor: Color { liveActivity?.color ?? status.color }
 
     public var displayCommand: String {
         ([command] + args).joined(separator: " ")

@@ -75,8 +75,8 @@ public class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
 
         // 1. UNUserNotificationCenter for actionable notifications
         let content = UNMutableNotificationContent()
-        content.title = "⚠️ Input Required: \(session.name)"
-        content.subtitle = "Folder: \(session.directoryName)"
+        content.title = "⏳ Waiting: \(session.name)"
+        content.subtitle = subtitle(for: session)
         content.body = prompt.promptText
         content.sound = .default
         switch prompt.promptType {
@@ -109,8 +109,8 @@ public class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
 
         // 2. Guaranteed native macOS banner via AppleScript
         sendSystemBanner(
-            title: "⚠️ Input Required: \(session.name)",
-            subtitle: session.directoryName.isEmpty ? "Agent Watch" : session.directoryName,
+            title: "⏳ Waiting: \(session.name)",
+            subtitle: subtitle(for: session),
             body: prompt.promptText
         )
 
@@ -118,6 +118,36 @@ public class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
         if NSSound(named: "Ping")?.play() != true {
             NSSound.beep()
         }
+    }
+
+    /// The agent finished its turn and waits for the next message. Keyed per turn by the
+    /// session's update time, so it is independent of the prompt-id debounce above.
+    public func sendDoneNotification(session: AgentSession) {
+        let title = "✅ Done: \(session.name)"
+        let body = session.taskTitle ?? "Finished. Waiting for your next message."
+
+        let content = UNMutableNotificationContent()
+        content.title = title
+        content.subtitle = subtitle(for: session, includeTask: false)
+        content.body = body
+        content.sound = .default
+        content.userInfo = ["session_id": session.id]
+        let request = UNNotificationRequest(
+            identifier: "done-\(session.id)-\(session.updatedAt)",
+            content: content,
+            trigger: UNTimeIntervalNotificationTrigger(timeInterval: 0.1, repeats: false)
+        )
+        if isAppBundle {
+            UNUserNotificationCenter.current().add(request)
+        }
+        sendSystemBanner(title: title, subtitle: subtitle(for: session, includeTask: false), body: body)
+    }
+
+    /// "Fix login bug · my-app": the task the agent reports, then the folder.
+    private func subtitle(for session: AgentSession, includeTask: Bool = true) -> String {
+        let task = includeTask ? session.taskTitle : nil
+        let parts = [task, session.directoryName].compactMap { $0 }.filter { !$0.isEmpty }
+        return parts.isEmpty ? "Agent Watch" : parts.joined(separator: " · ")
     }
 
     private func sendSystemBanner(title: String, subtitle: String, body: String) {
