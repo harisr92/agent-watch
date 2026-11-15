@@ -86,6 +86,11 @@ impl RollingOutputBuffer {
         rows[end.saturating_sub(n)..end].to_vec()
     }
 
+    /// The terminal title last set by the program (OSC 0/2), empty if none.
+    pub fn title(&self) -> &str {
+        self.screen.screen().title()
+    }
+
     pub fn get_current_line(&self) -> &str {
         &self.current_line
     }
@@ -142,6 +147,17 @@ mod tests {
         let mut buf = RollingOutputBuffer::new(5);
         buf.append("a\nb\nprompt> ");
         assert_eq!(buf.visible_tail(2), vec!["b", "prompt> "]);
+    }
+
+    #[test]
+    fn test_title_tracks_latest_osc_title() {
+        let mut buf = RollingOutputBuffer::new(5);
+        assert_eq!(buf.title(), "");
+        buf.append("\x1b]0;\u{25d0} Fix bug\x07work");
+        assert_eq!(buf.title(), "\u{25d0} Fix bug");
+        // ST-terminated OSC 2, and other OSC sequences (progress, hyperlinks) leave it alone.
+        buf.append("\x1b]2;\u{2733} Fix bug\x1b\\\x1b]9;4;0;\x07\x1b]8;;file:///a\x07");
+        assert_eq!(buf.title(), "\u{2733} Fix bug");
     }
 
     #[test]
