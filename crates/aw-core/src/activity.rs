@@ -44,6 +44,17 @@ pub struct AgentTitle {
     pub task: String,
 }
 
+/// Whether a session's terminal title can be trusted for activity. Only Claude Code's title
+/// glyphs are known; another program with a spinner in its title could otherwise hide its
+/// questions as "working".
+pub fn reports_title_activity(command: &str, args: &[String]) -> bool {
+    let program = std::path::Path::new(command)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or(command);
+    program == "claude" || args.iter().any(|a| a.contains("claude-code"))
+}
+
 /// Parses a terminal title; `None` when it has no known status glyph (plain shells,
 /// other programs), so callers fall back to screen heuristics.
 pub fn parse_title(title: &str) -> Option<AgentTitle> {
@@ -104,6 +115,23 @@ mod tests {
             let want = want.map(|(s, t)| (s, t.to_string()));
             assert_eq!(got, want, "title {title:?}");
         }
+    }
+
+    #[test]
+    fn test_reports_title_activity() {
+        let args = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert!(reports_title_activity("claude", &[]));
+        assert!(reports_title_activity(
+            "/opt/homebrew/bin/claude",
+            &args(&["-c"])
+        ));
+        assert!(reports_title_activity(
+            "npx",
+            &args(&["@anthropic-ai/claude-code"])
+        ));
+        assert!(!reports_title_activity("agy", &[]));
+        assert!(!reports_title_activity("claude-wrapper", &[]));
+        assert!(!reports_title_activity("python3", &args(&["claude.py"])));
     }
 
     #[test]

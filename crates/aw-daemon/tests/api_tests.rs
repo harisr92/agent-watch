@@ -850,3 +850,26 @@ async fn test_stopped_title_before_menu_is_drawn_is_not_done() {
     let s = state.get_session("race").await.unwrap();
     assert_eq!(s.activity, Some(AgentActivity::Waiting));
 }
+
+#[tokio::test]
+async fn test_title_glyphs_ignored_for_other_agents() {
+    // Only Claude Code's title glyphs are known; another program's spinner title must not
+    // mark it "working" (that would hide its questions).
+    let state = AppState::new();
+    let app = create_router(state.clone());
+    post_json(
+        &app,
+        "/api/v1/sessions/register",
+        json!({ "id": "other", "name": "agy", "command": "agy", "args": [], "cwd": "/tmp", "pid": null }),
+    )
+    .await;
+    output(
+        &app,
+        "other",
+        &format!("{}Overwrite existing file? [y/n] ", title("\u{25d0} Task")),
+    )
+    .await;
+    let s = state.get_session("other").await.unwrap();
+    assert_eq!(s.activity, None);
+    assert_eq!(s.status, AgentStatus::WaitingForInput);
+}

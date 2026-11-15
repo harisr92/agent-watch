@@ -1,4 +1,6 @@
-use aw_core::activity::{next_activity, parse_title, AgentTitle, ScreenState, TitleState};
+use aw_core::activity::{
+    next_activity, parse_title, reports_title_activity, AgentTitle, ScreenState, TitleState,
+};
 use aw_core::buffer::RollingOutputBuffer;
 use aw_core::detector::{PromptDetector, CHAT_INPUT_PROMPT};
 use aw_core::models::{
@@ -95,7 +97,9 @@ impl AppState {
             chunk: chunk.to_string(),
         });
 
-        let title = parse_title(active.buffer.title());
+        let title = reports_title_activity(&active.session.command, &active.session.args)
+            .then(|| parse_title(active.buffer.title()))
+            .flatten();
         let title_working = title
             .as_ref()
             .is_some_and(|t| t.state == TitleState::Working);
