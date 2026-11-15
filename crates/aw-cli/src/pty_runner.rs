@@ -407,6 +407,22 @@ mod tests {
         assert_eq!(rx.recv().await, None);
     }
 
+    #[tokio::test]
+    async fn forward_remote_inputs_ignores_dismissed_prompts() {
+        // Dismissing in Agent Watch must never type anything into the agent.
+        let (tx, mut rx) = mpsc::channel(8);
+        let dismissed = AgentEvent::PromptDismissed {
+            session_id: "me".to_string(),
+            prompt_id: "p1".to_string(),
+        };
+        let frames: Vec<Result<Message, ()>> = vec![Ok(Message::Text(
+            serde_json::to_string(&dismissed).unwrap(),
+        ))];
+        forward_remote_inputs(stream::iter(frames), "me", &tx).await;
+        drop(tx);
+        assert_eq!(rx.recv().await, None);
+    }
+
     #[test]
     fn queue_for_daemon_holds_text_back_while_channel_is_full() {
         let (tx, mut rx) = mpsc::channel(1);

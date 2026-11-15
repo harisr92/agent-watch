@@ -122,6 +122,12 @@ pub enum AgentEvent {
         #[serde(default = "default_true")]
         press_enter: bool,
     },
+    /// The user dismissed the prompt in Agent Watch. Nothing was sent to the agent, which
+    /// may still be waiting in its terminal.
+    PromptDismissed {
+        session_id: String,
+        prompt_id: String,
+    },
     OutputDelta {
         session_id: String,
         chunk: String,
