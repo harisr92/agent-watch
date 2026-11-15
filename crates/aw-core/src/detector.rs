@@ -127,6 +127,12 @@ impl PromptDetector {
             .collect();
         let last_line = *lines.last()?;
 
+        // A working agent is not waiting: whatever it is printing (diffs, tool output) is not
+        // a question, even when a line happens to look like one.
+        if Self::is_busy(&cleaned) {
+            return None;
+        }
+
         // 0. An idle chat input box drawn by a full-screen TUI
         if Self::has_idle_chat_box(&cleaned) {
             return Some(PendingPrompt::new(
@@ -235,11 +241,8 @@ impl PromptDetector {
     /// ```
     ///
     /// The box stays visible while the agent works (for typing ahead), so it only counts as
-    /// waiting when no busy indicator ("esc to interrupt") is on screen.
+    /// waiting when no busy indicator is on screen (checked by the caller).
     fn has_idle_chat_box(screen: &str) -> bool {
-        if screen.to_lowercase().contains("esc to interrupt") {
-            return false;
-        }
         let is_rule = |l: &str| {
             let t = l.trim();
             // Tolerate a stray U+FFFD from a character mangled by a split read.
@@ -256,6 +259,12 @@ impl PromptDetector {
                 && (input.starts_with('❯') || input.starts_with('>'))
                 && lines[top + 2..].iter().take(10).any(|l| is_rule(l))
         })
+    }
+
+    /// True while a TUI agent shows its "working" indicator (Claude Code, Codex: "esc to
+    /// interrupt"). A busy agent is never waiting for input.
+    pub fn is_busy(screen: &str) -> bool {
+        screen.to_lowercase().contains("esc to interrupt")
     }
 
     fn confirm(session_id: &str, text: &str) -> PendingPrompt {
@@ -766,5 +775,57 @@ mod tests {
         let screen = "Done.\n────────────────────\n❯ a long draft that\n  wraps onto a second line\n────────────────────\n? for shortcuts";
         let p = detector.detect_prompt("s", screen).expect("draft prompt");
         assert_eq!(p.prompt_text, CHAT_INPUT_PROMPT);
+    }
+
+    /// Claude Code mid-edit in auto mode: a diff, the spinner, and the input box.
+    const DIFF: &str = "⏺ Update(src/Picker.test.tsx)\n  ⎿  Updated src/Picker.test.tsx with 1 addition and 1 removal\n       185      it(\"focuses the picker?\", () => {\n       186 -      expect(screen.getByRole(\"combobox\", { name: /Pick one/ })).toHaveFocus();\n       187 +      expect(screen.getByRole(\"combobox\", { name: \"Pick one\" })).toHaveFocus();\n       188      });\n       189    });\n       190  });";
+    const INPUT_BOX: &str =
+        "────────────────────\n❯ \n────────────────────\n⏵⏵ auto mode on (shift+tab to cycle)";
+
+    #[test]
+    fn test_busy_agent_output_is_not_a_prompt() {
+        let detector = PromptDetector::new();
+        let cases = [
+            // Diff line with a '?' above the input box's ❯ once looked like an arrow menu.
+            format!("{DIFF}\n\n✻ Crafting… (8s · esc to interrupt)\n\n{INPUT_BOX}"),
+            format!("{DIFF}\n✻ Crafting… (8s · ↓ 1.2k tokens · Esc to interrupt)\n{INPUT_BOX}"),
+            // Prompt-looking last lines while working.
+            "✻ Running… (3s · esc to interrupt)\nconfig:".to_string(),
+            "• Working (5s • esc to interrupt)\nDo you want to proceed?".to_string(),
+            "esc to interrupt\nWhich file?\n❯ a.rs\n  b.rs".to_string(),
+        ];
+        for screen in &cases {
+            let p = detector.detect_prompt("s", screen);
+            assert!(p.is_none(), "busy screen detected as {p:?}:\n{screen}");
+        }
+    }
+
+    #[test]
+    fn test_prompts_without_busy_indicator_still_detected() {
+        let detector = PromptDetector::new();
+        // Near misses of the busy case: a permission menu under a diff, and an idle box.
+        let menu = format!(
+            "{DIFF}\n\nDo you want to make this edit to Picker.test.tsx?\n❯ 1. Yes\n  2. Yes, allow all edits\n  3. No\n\nEsc to cancel"
+        );
+        let p = detector.detect_prompt("s", &menu).expect("permission menu");
+        assert_eq!(p.prompt_type, PromptType::Select);
+        assert_eq!(p.options, vec!["1", "2", "3"]);
+
+        let idle = format!("{DIFF}\n\n{INPUT_BOX}");
+        let p = detector.detect_prompt("s", &idle).expect("idle box");
+        assert_eq!(p.prompt_text, CHAT_INPUT_PROMPT);
+    }
+
+    #[test]
+    fn test_is_busy() {
+        for (screen, busy) in [
+            ("✻ Thinking… (12s · esc to interrupt)", true),
+            ("Working (5s • ESC TO INTERRUPT)", true),
+            ("Esc to cancel", false),
+            ("press esc to go back", false),
+            ("", false),
+        ] {
+            assert_eq!(PromptDetector::is_busy(screen), busy, "{screen:?}");
+        }
     }
 }
