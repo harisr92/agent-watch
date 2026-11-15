@@ -48,6 +48,9 @@ public struct AgentSessionListView: View {
                                 },
                                 onFocus: {
                                     client.focusTerminal(for: session)
+                                },
+                                onDismiss: {
+                                    client.dismissPrompt(sessionId: session.id)
                                 }
                             )
                             .id(prompt.id)

@@ -56,6 +56,11 @@ public class DaemonClient: ObservableObject {
                 self?.submitInput(sessionId: sessionId, input: input)
             }
         }
+        NotificationManager.shared.onDismissResponse = { [weak self] sessionId in
+            Task { @MainActor in
+                self?.dismissPrompt(sessionId: sessionId)
+            }
+        }
     }
 
     public func start() {
@@ -165,6 +170,13 @@ public class DaemonClient: ObservableObject {
                     handleAgentRequest(session: fallbackSession, prompt: prompt)
                 }
                 StatusBarController.shared.updateStatusItem()
+                return
+            }
+
+            if type == "prompt_dismissed",
+               let payload = json["payload"] as? [String: Any],
+               let sessionId = payload["session_id"] as? String {
+                applyPromptDismissed(sessionId: sessionId)
                 return
             }
 
@@ -290,6 +302,33 @@ public class DaemonClient: ObservableObject {
                 print("Failed to send input: \(error)")
             }
         }
+    }
+
+    /// Hides the session's pending prompt without answering it: nothing is sent to the agent,
+    /// which keeps waiting in its terminal.
+    public func dismissPrompt(sessionId: String) {
+        applyPromptDismissed(sessionId: sessionId)
+
+        guard let url = URL(string: "\(apiBaseUrl)/api/v1/sessions/\(sessionId)/dismiss") else { return }
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        Task {
+            _ = try? await URLSession.shared.data(for: request)
+        }
+    }
+
+    /// Local half of a dismissal, also applied when another client dismissed the prompt.
+    func applyPromptDismissed(sessionId: String) {
+        guard let idx = sessions.firstIndex(where: { $0.id == sessionId }) else { return }
+        if let promptId = sessions[idx].pendingPrompt?.id {
+            NotificationManager.shared.removePromptNotification(promptId: promptId)
+            if WindowManager.shared.activeNotification?.id == promptId {
+                WindowManager.shared.clearInWindowNotification()
+            }
+        }
+        sessions[idx].status = .running
+        sessions[idx].pendingPrompt = nil
+        StatusBarController.shared.updateStatusItem()
     }
 
     public func terminateSession(sessionId: String) {

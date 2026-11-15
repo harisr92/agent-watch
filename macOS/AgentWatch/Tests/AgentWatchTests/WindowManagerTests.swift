@@ -73,6 +73,35 @@ final class WindowManagerTests: XCTestCase {
         XCTAssertNil(manager.activeNotification)
     }
 
+    func testDismissPromptClearsItLocally() {
+        let client = DaemonClient.shared
+        let manager = WindowManager.shared
+        let prompt = try! JSONDecoder().decode(PendingPrompt.self, from: Data("""
+        {"id": "p-dismiss", "session_id": "s-dismiss", "prompt_text": "Proceed? [y/n]",
+         "prompt_type": "confirm", "options": ["y", "n"], "created_at": "2026-11-15T00:00:00Z"}
+        """.utf8))
+        let session = AgentSession(
+            id: "s-dismiss", name: "agent", command: "agent", args: [], cwd: "/tmp", pid: nil,
+            status: .waitingForInput, pendingPrompt: prompt,
+            startedAt: "", updatedAt: "", recentOutput: []
+        )
+        let saved = client.sessions
+        defer { client.sessions = saved }
+        client.sessions = [session]
+        manager.showInWindowNotification(session: session, prompt: prompt)
+
+        client.applyPromptDismissed(sessionId: "s-dismiss")
+
+        XCTAssertEqual(client.sessions.first?.status, .running)
+        XCTAssertNil(client.sessions.first?.pendingPrompt)
+        XCTAssertTrue(client.waitingSessions.isEmpty)
+        XCTAssertNil(manager.activeNotification, "the banner for the dismissed prompt goes away")
+
+        // Unknown sessions are ignored.
+        client.applyPromptDismissed(sessionId: "missing")
+        XCTAssertEqual(client.sessions.count, 1)
+    }
+
     func testAgentRequestFocusRouting() {
         let client = DaemonClient.shared
         let manager = WindowManager.shared

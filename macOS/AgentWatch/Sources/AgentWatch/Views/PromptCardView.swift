@@ -7,6 +7,8 @@ public struct PromptCardView: View {
     /// Sends `input` to the agent; the flag says whether Enter follows it.
     public let onInput: (String, Bool) -> Void
     public let onFocus: () -> Void
+    /// Hides the prompt without answering: nothing reaches the agent. No button when nil.
+    public let onDismiss: (() -> Void)?
 
     @State private var inputText: String = ""
     @State private var hoveredChoice: PromptChoice?
@@ -18,13 +20,15 @@ public struct PromptCardView: View {
         prompt: PendingPrompt,
         autoFocus: Bool = true,
         onInput: @escaping (String, Bool) -> Void,
-        onFocus: @escaping () -> Void
+        onFocus: @escaping () -> Void,
+        onDismiss: (() -> Void)? = nil
     ) {
         self.session = session
         self.prompt = prompt
         self.autoFocus = autoFocus
         self.onInput = onInput
         self.onFocus = onFocus
+        self.onDismiss = onDismiss
     }
 
     public var body: some View {
@@ -130,6 +134,20 @@ public struct PromptCardView: View {
             }
             .buttonStyle(.plain)
             .help("Jump to Terminal")
+
+            if let onDismiss {
+                Button(action: onDismiss) {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundColor(.secondary)
+                        .padding(5)
+                        .background(.ultraThinMaterial)
+                        .clipShape(Circle())
+                }
+                .buttonStyle(.plain)
+                .help("Dismiss without answering (the agent keeps waiting)")
+                .accessibilityIdentifier("dismissPrompt")
+            }
         }
     }
 

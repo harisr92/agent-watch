@@ -5,6 +5,8 @@ import AppKit
 public class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
     public static let shared = NotificationManager()
     public var onInputResponse: ((String, String) -> Void)?
+    /// The user chose "Dismiss": hide the prompt without answering the agent.
+    public var onDismissResponse: ((String) -> Void)?
     private var lastNotifiedPromptId: String?
 
     private var isAppBundle: Bool {
@@ -40,9 +42,15 @@ public class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
             options: [.destructive]
         )
 
+        let dismissAction = UNNotificationAction(
+            identifier: "DISMISS_ACTION",
+            title: "Dismiss",
+            options: []
+        )
+
         let promptCategory = UNNotificationCategory(
             identifier: "AGENT_PROMPT",
-            actions: [approveAction, rejectAction],
+            actions: [approveAction, rejectAction, dismissAction],
             intentIdentifiers: [],
             options: []
         )
@@ -56,14 +64,22 @@ public class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
         )
         let textCategory = UNNotificationCategory(
             identifier: "AGENT_TEXT_PROMPT",
-            actions: [replyAction],
+            actions: [replyAction, dismissAction],
+            intentIdentifiers: [],
+            options: []
+        )
+        let dismissOnlyCategory = UNNotificationCategory(
+            identifier: "AGENT_DISMISSABLE_PROMPT",
+            actions: [dismissAction],
             intentIdentifiers: [],
             options: []
         )
 
-        // Select, secret and acknowledge prompts have no inline actions: a menu can't fit in a
+        // Select, secret and acknowledge prompts only get "Dismiss": a menu can't fit in a
         // notification and a secret shouldn't be typed into one. Clicking opens the popover.
-        UNUserNotificationCenter.current().setNotificationCategories([promptCategory, textCategory])
+        UNUserNotificationCenter.current().setNotificationCategories(
+            [promptCategory, textCategory, dismissOnlyCategory]
+        )
     }
 
     public func sendPromptNotification(session: AgentSession, prompt: PendingPrompt) {
@@ -85,12 +101,13 @@ public class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
         case .text:
             content.categoryIdentifier = "AGENT_TEXT_PROMPT"
         case .select:
+            content.categoryIdentifier = "AGENT_DISMISSABLE_PROMPT"
             let labels = prompt.choices.prefix(4).map(\.label).joined(separator: " · ")
             if !labels.isEmpty {
                 content.body = "\(prompt.promptText)\n\(labels)"
             }
         case .secret, .acknowledge:
-            break
+            content.categoryIdentifier = "AGENT_DISMISSABLE_PROMPT"
         }
         content.userInfo = [
             "session_id": session.id,
@@ -150,6 +167,12 @@ public class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
         return parts.isEmpty ? "Agent Watch" : parts.joined(separator: " · ")
     }
 
+    /// Removes a prompt's notification from Notification Center once it is no longer pending.
+    public func removePromptNotification(promptId: String) {
+        guard isAppBundle else { return }
+        UNUserNotificationCenter.current().removeDeliveredNotifications(withIdentifiers: ["prompt-\(promptId)"])
+    }
+
     private func sendSystemBanner(title: String, subtitle: String, body: String) {
         let cleanTitle = title.replacingOccurrences(of: "\"", with: "\\\"")
         let cleanSubtitle = subtitle.replacingOccurrences(of: "\"", with: "\\\"")
@@ -177,6 +200,8 @@ public class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
                 onInputResponse?(sessionId, "y")
             case "REJECT_ACTION":
                 onInputResponse?(sessionId, "n")
+            case "DISMISS_ACTION":
+                onDismissResponse?(sessionId)
             case "REPLY_ACTION":
                 if let reply = (response as? UNTextInputNotificationResponse)?.userText {
                     onInputResponse?(sessionId, reply)
