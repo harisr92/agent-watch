@@ -670,3 +670,183 @@ async fn test_auto_detected_prompt_cleared_when_agent_gets_busy() {
     assert_eq!(session.status, AgentStatus::Running);
     assert!(session.pending_prompt.is_none());
 }
+
+/// Terminal title as Claude Code sets it (OSC 0, BEL-terminated).
+fn title(text: &str) -> String {
+    format!("\x1b]0;{text}\x07")
+}
+
+const RULE: &str = "\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}";
+
+fn idle_box() -> String {
+    format!("\r\n{RULE}\r\n\u{276f} \r\n{RULE}\r\n")
+}
+
+async fn register(app: &axum::Router, id: &str) {
+    post_json(
+        app,
+        "/api/v1/sessions/register",
+        json!({ "id": id, "name": "claude", "command": "claude", "args": [], "cwd": "/tmp", "pid": null }),
+    )
+    .await;
+}
+
+async fn output(app: &axum::Router, id: &str, chunk: &str) {
+    post_json(
+        app,
+        &format!("/api/v1/sessions/{id}/output"),
+        json!({ "chunk": chunk }),
+    )
+    .await;
+}
+
+fn session_updates(events: &mut tokio::sync::broadcast::Receiver<AgentEvent>) -> Vec<AgentSession> {
+    let mut out = Vec::new();
+    while let Ok(event) = events.try_recv() {
+        if let AgentEvent::SessionUpdated(s) = event {
+            out.push(s);
+        }
+    }
+    out
+}
+
+#[tokio::test]
+async fn test_activity_follows_title_working_then_done() {
+    use aw_core::models::AgentActivity;
+    let state = AppState::new();
+    let app = create_router(state.clone());
+    register(&app, "turn").await;
+
+    // Startup: stopped glyph, idle box. Not "done": the agent never worked.
+    output(
+        &app,
+        "turn",
+        &format!("{}{}", title("\u{2733} Claude Code"), idle_box()),
+    )
+    .await;
+    let s = state.get_session("turn").await.unwrap();
+    assert_eq!(s.activity, None);
+
+    // Working: the spinner title retracts the idle-box prompt even without "esc to interrupt".
+    output(
+        &app,
+        "turn",
+        &format!("{}\r\nthinking\r\n", title("\u{25d0} Ok reply")),
+    )
+    .await;
+    let s = state.get_session("turn").await.unwrap();
+    assert_eq!(s.activity, Some(AgentActivity::Working));
+    assert_eq!(s.task_title.as_deref(), Some("Ok reply"));
+    assert_eq!(s.status, AgentStatus::Running);
+    assert!(s.pending_prompt.is_none());
+
+    // Done: stopped glyph with only the idle box on screen.
+    output(
+        &app,
+        "turn",
+        &format!("{}ok\r\n{}", title("\u{2733} Ok reply"), idle_box()),
+    )
+    .await;
+    let s = state.get_session("turn").await.unwrap();
+    assert_eq!(s.activity, Some(AgentActivity::Done));
+    assert_eq!(s.task_title.as_deref(), Some("Ok reply"));
+}
+
+#[tokio::test]
+async fn test_activity_waiting_on_permission_menu() {
+    use aw_core::models::AgentActivity;
+    let state = AppState::new();
+    let app = create_router(state.clone());
+    register(&app, "perm").await;
+
+    output(&app, "perm", &title("\u{25d0} Create file")).await;
+    output(
+        &app,
+        "perm",
+        &format!(
+            "{}Do you want to create hello.txt?\r\n\u{276f} 1. Yes\r\n  2. Yes, and allow all edits\r\n  3. No\r\n\r\nEsc to cancel\r\n",
+            title("\u{2733} Create file")
+        ),
+    )
+    .await;
+    let s = state.get_session("perm").await.unwrap();
+    assert_eq!(s.activity, Some(AgentActivity::Waiting));
+    assert_eq!(s.status, AgentStatus::WaitingForInput);
+    assert_eq!(s.pending_prompt.unwrap().options, vec!["1", "2", "3"]);
+}
+
+#[tokio::test]
+async fn test_spinner_frames_do_not_spam_session_updates() {
+    let state = AppState::new();
+    let mut events = state.events_tx.subscribe();
+    let app = create_router(state.clone());
+    register(&app, "spin").await;
+    output(&app, "spin", &title("\u{25d0} Task")).await;
+    let _ = session_updates(&mut events);
+
+    for glyph in ["\u{25d1}", "\u{25d0}", "\u{25d1}", "\u{25d0}"] {
+        output(
+            &app,
+            "spin",
+            &format!("{}.", title(&format!("{glyph} Task"))),
+        )
+        .await;
+    }
+    assert!(session_updates(&mut events).is_empty());
+
+    // A new task name is worth an update.
+    output(&app, "spin", &title("\u{25d1} Renamed task")).await;
+    let updates = session_updates(&mut events);
+    assert_eq!(updates.len(), 1);
+    assert_eq!(updates[0].task_title.as_deref(), Some("Renamed task"));
+}
+
+#[tokio::test]
+async fn test_no_title_signal_leaves_activity_unknown() {
+    let state = AppState::new();
+    let app = create_router(state.clone());
+    register(&app, "plain").await;
+    output(
+        &app,
+        "plain",
+        "\x1b]0;bash\x07Overwrite existing file? [y/n] ",
+    )
+    .await;
+    let s = state.get_session("plain").await.unwrap();
+    assert_eq!(s.activity, None);
+    assert_eq!(s.task_title, None);
+    // Screen heuristics still work as before.
+    assert_eq!(s.status, AgentStatus::WaitingForInput);
+}
+
+#[tokio::test]
+async fn test_stopped_title_before_menu_is_drawn_is_not_done() {
+    // Claude Code sets the stopped title a moment before drawing a permission menu; the gap
+    // must not read as "done" (a bogus done notification right before every approval).
+    use aw_core::models::AgentActivity;
+    let state = AppState::new();
+    let app = create_router(state.clone());
+    register(&app, "race").await;
+
+    output(&app, "race", &title("\u{25d0} Create file")).await;
+    output(
+        &app,
+        "race",
+        &format!(
+            "{}Create file hello.txt\r\n  1  hi\r\n",
+            title("\u{2733} Create file")
+        ),
+    )
+    .await;
+    let s = state.get_session("race").await.unwrap();
+    assert_eq!(s.activity, Some(AgentActivity::Working));
+
+    output(
+        &app,
+        "race",
+        "Do you want to create hello.txt?\r\n\u{276f} 1. Yes\r\n  2. No\r\n\r\nEsc to cancel\r\n",
+    )
+    .await;
+    let s = state.get_session("race").await.unwrap();
+    assert_eq!(s.activity, Some(AgentActivity::Waiting));
+}

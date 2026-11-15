@@ -1,3 +1,4 @@
+use aw_core::activity::{next_activity, parse_title, AgentTitle, ScreenState, TitleState};
 use aw_core::buffer::RollingOutputBuffer;
 use aw_core::detector::{PromptDetector, CHAT_INPUT_PROMPT};
 use aw_core::models::{
@@ -84,102 +85,150 @@ impl AppState {
 
     pub async fn append_output(&self, session_id: &str, chunk: &str) -> Option<PendingPrompt> {
         let mut lock = self.sessions.write().await;
-        if let Some(active) = lock.get_mut(session_id) {
-            active.buffer.append(chunk);
-            active.session.updated_at = Utc::now();
-            active.session.recent_output = active.buffer.visible_tail(30);
+        let active = lock.get_mut(session_id)?;
+        active.buffer.append(chunk);
+        active.session.updated_at = Utc::now();
+        active.session.recent_output = active.buffer.visible_tail(30);
 
-            // Broadcast delta
-            let _ = self.events_tx.send(AgentEvent::OutputDelta {
-                session_id: session_id.to_string(),
-                chunk: chunk.to_string(),
-            });
+        let _ = self.events_tx.send(AgentEvent::OutputDelta {
+            session_id: session_id.to_string(),
+            chunk: chunk.to_string(),
+        });
 
-            // Agents often print a question line by line, so the first detection can fire on
-            // a partial prompt (e.g. just the question, before its options arrive). While an
-            // auto-detected prompt is pending, keep re-detecting so it picks up the later lines.
-            let waiting = active.session.status == AgentStatus::WaitingForInput;
-            if waiting && !active.prompt_auto_detected {
-                return None;
-            }
+        let title = parse_title(active.buffer.title());
+        let title_working = title
+            .as_ref()
+            .is_some_and(|t| t.state == TitleState::Working);
+        let raised = self.update_prompt(session_id, active, title_working);
+        self.update_activity(active, title);
+        raised
+    }
 
-            let tail_text = active.buffer.visible_tail(30).join("\n");
-            let detected = self.detector.detect_prompt(session_id, &tail_text);
+    /// Updates the auto-detected prompt from the screen. `title_working` means the agent says
+    /// it is busy through its terminal title, so nothing on screen is a question.
+    /// Returns a newly raised prompt.
+    fn update_prompt(
+        &self,
+        session_id: &str,
+        active: &mut ActiveSession,
+        title_working: bool,
+    ) -> Option<PendingPrompt> {
+        // Agents often print a question line by line, so the first detection can fire on
+        // a partial prompt (e.g. just the question, before its options arrive). While an
+        // auto-detected prompt is pending, keep re-detecting so it picks up the later lines.
+        let waiting = active.session.status == AgentStatus::WaitingForInput;
+        if waiting && !active.prompt_auto_detected {
+            return None;
+        }
 
-            if waiting {
-                // Only ever refine a pending prompt, never drop it: spinners or screen redraws
-                // while the agent waits must not make a real question vanish. The exception is
-                // an idle chat box (it stays drawn while idle, so once it is gone the user has
-                // answered from the terminal) and a busy agent, which is not waiting at all.
-                let Some(mut prompt) = detected else {
-                    let was_chat_input = active
-                        .session
-                        .pending_prompt
-                        .as_ref()
-                        .is_some_and(|p| p.prompt_text == CHAT_INPUT_PROMPT);
-                    if was_chat_input || PromptDetector::is_busy(&tail_text) {
-                        active.session.status = AgentStatus::Running;
-                        active.session.pending_prompt = None;
-                        active.prompt_auto_detected = false;
-                        let _ = self
-                            .events_tx
-                            .send(AgentEvent::SessionUpdated(active.session.clone()));
-                    }
-                    return None;
-                };
-                let current = active.session.pending_prompt.as_ref();
-                let unchanged = current.is_some_and(|c| {
-                    c.prompt_text == prompt.prompt_text
-                        && c.prompt_type == prompt.prompt_type
-                        && c.options == prompt.options
-                });
-                if unchanged {
-                    return None;
-                }
-                // Keep the id so the UI treats this as the same prompt, now complete.
-                if let Some(c) = current {
-                    prompt.id = c.id.clone();
-                    prompt.created_at = c.created_at;
-                }
-                active.session.pending_prompt = Some(prompt.clone());
-                info!(
-                    "Prompt refined for session {}: {:?}",
-                    session_id, prompt.prompt_text
-                );
-                let _ = self
-                    .events_tx
-                    .send(AgentEvent::SessionUpdated(active.session.clone()));
-                return None;
-            }
+        let tail_text = active.buffer.visible_tail(30).join("\n");
+        let busy = title_working || PromptDetector::is_busy(&tail_text);
+        let detected = if busy {
+            None
+        } else {
+            self.detector.detect_prompt(session_id, &tail_text)
+        };
 
-            match detected {
-                Some(prompt)
-                    if active.last_resolved_prompt_text.as_deref() != Some(&prompt.prompt_text) =>
-                {
-                    active.last_resolved_prompt_text = None;
-                    active.prompt_auto_detected = true;
-                    active.session.status = AgentStatus::WaitingForInput;
-                    active.session.pending_prompt = Some(prompt.clone());
-
-                    let _ = self.events_tx.send(AgentEvent::PromptRequired {
-                        session_id: session_id.to_string(),
-                        prompt: prompt.clone(),
-                    });
+        if waiting {
+            // Only ever refine a pending prompt, never drop it: spinners or screen redraws
+            // while the agent waits must not make a real question vanish. The exception is
+            // an idle chat box (it stays drawn while idle, so once it is gone the user has
+            // answered from the terminal) and a busy agent, which is not waiting at all.
+            let Some(mut prompt) = detected else {
+                let was_chat_input = active
+                    .session
+                    .pending_prompt
+                    .as_ref()
+                    .is_some_and(|p| p.prompt_text == CHAT_INPUT_PROMPT);
+                if was_chat_input || busy {
+                    active.session.status = AgentStatus::Running;
+                    active.session.pending_prompt = None;
+                    active.prompt_auto_detected = false;
                     let _ = self
                         .events_tx
                         .send(AgentEvent::SessionUpdated(active.session.clone()));
-
-                    info!(
-                        "Prompt detected for session {}: {:?}",
-                        session_id, prompt.prompt_text
-                    );
-                    return Some(prompt);
                 }
-                Some(_) => {}
-                None => active.last_resolved_prompt_text = None,
+                return None;
+            };
+            let current = active.session.pending_prompt.as_ref();
+            let unchanged = current.is_some_and(|c| {
+                c.prompt_text == prompt.prompt_text
+                    && c.prompt_type == prompt.prompt_type
+                    && c.options == prompt.options
+            });
+            if unchanged {
+                return None;
             }
+            // Keep the id so the UI treats this as the same prompt, now complete.
+            if let Some(c) = current {
+                prompt.id = c.id.clone();
+                prompt.created_at = c.created_at;
+            }
+            active.session.pending_prompt = Some(prompt.clone());
+            info!(
+                "Prompt refined for session {}: {:?}",
+                session_id, prompt.prompt_text
+            );
+            let _ = self
+                .events_tx
+                .send(AgentEvent::SessionUpdated(active.session.clone()));
+            return None;
+        }
+
+        match detected {
+            Some(prompt)
+                if active.last_resolved_prompt_text.as_deref() != Some(&prompt.prompt_text) =>
+            {
+                active.last_resolved_prompt_text = None;
+                active.prompt_auto_detected = true;
+                active.session.status = AgentStatus::WaitingForInput;
+                active.session.pending_prompt = Some(prompt.clone());
+
+                let _ = self.events_tx.send(AgentEvent::PromptRequired {
+                    session_id: session_id.to_string(),
+                    prompt: prompt.clone(),
+                });
+                let _ = self
+                    .events_tx
+                    .send(AgentEvent::SessionUpdated(active.session.clone()));
+
+                info!(
+                    "Prompt detected for session {}: {:?}",
+                    session_id, prompt.prompt_text
+                );
+                return Some(prompt);
+            }
+            Some(_) => {}
+            None => active.last_resolved_prompt_text = None,
         }
         None
+    }
+
+    /// Recomputes working / waiting / done and broadcasts only when it, or the task name,
+    /// changes: spinner glyphs flip several times a second.
+    fn update_activity(&self, active: &mut ActiveSession, title: Option<AgentTitle>) {
+        let screen = match &active.session.pending_prompt {
+            Some(p) if p.prompt_text == CHAT_INPUT_PROMPT => ScreenState::IdleInput,
+            Some(_) => ScreenState::Question,
+            None => ScreenState::Other,
+        };
+        let activity = next_activity(
+            active.session.activity,
+            title.as_ref().map(|t| t.state),
+            screen,
+        );
+        let task_title = title
+            .map(|t| t.task)
+            .filter(|t| !t.is_empty())
+            .or_else(|| active.session.task_title.clone());
+        if activity == active.session.activity && task_title == active.session.task_title {
+            return;
+        }
+        active.session.activity = activity;
+        active.session.task_title = task_title;
+        let _ = self
+            .events_tx
+            .send(AgentEvent::SessionUpdated(active.session.clone()));
     }
 
     pub async fn submit_input(&self, session_id: &str, req: UserInputRequest) -> bool {
@@ -285,6 +334,7 @@ impl AppState {
                 AgentStatus::Failed
             };
             active.session.pending_prompt = None;
+            active.session.activity = None;
             active.session.updated_at = Utc::now();
 
             let _ = self.events_tx.send(AgentEvent::SessionTerminated {
