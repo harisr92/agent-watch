@@ -164,6 +164,24 @@ impl AppState {
             if unchanged {
                 return None;
             }
+            // A real question replacing the idle chat box is new, not a refinement: raise it
+            // so the user is notified (agents can show the box for a moment before a menu).
+            let was_chat_input = current.is_some_and(|c| c.prompt_text == CHAT_INPUT_PROMPT);
+            if was_chat_input && prompt.prompt_text != CHAT_INPUT_PROMPT {
+                active.session.pending_prompt = Some(prompt.clone());
+                let _ = self.events_tx.send(AgentEvent::PromptRequired {
+                    session_id: session_id.to_string(),
+                    prompt: prompt.clone(),
+                });
+                let _ = self
+                    .events_tx
+                    .send(AgentEvent::SessionUpdated(active.session.clone()));
+                info!(
+                    "Prompt replaced idle box for session {}: {:?}",
+                    session_id, prompt.prompt_text
+                );
+                return Some(prompt);
+            }
             // Keep the id so the UI treats this as the same prompt, now complete.
             if let Some(c) = current {
                 prompt.id = c.id.clone();

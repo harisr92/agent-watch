@@ -852,6 +852,53 @@ async fn test_stopped_title_before_menu_is_drawn_is_not_done() {
 }
 
 #[tokio::test]
+async fn test_menu_replacing_idle_box_is_raised_as_new_prompt() {
+    // Antigravity CLI shows its idle box for a moment before a permission menu. The menu must
+    // be raised (and notified), not folded silently into the idle-box prompt.
+    let state = AppState::new();
+    let mut events = state.events_tx.subscribe();
+    let app = create_router(state.clone());
+    post_json(
+        &app,
+        "/api/v1/sessions/register",
+        json!({ "id": "agy", "name": "agy", "command": "agy", "args": [], "cwd": "/tmp", "pid": null }),
+    )
+    .await;
+    output(
+        &app,
+        "agy",
+        &format!("> echo probe\r\n{}? for shortcuts\r\n", idle_box()),
+    )
+    .await;
+    let idle = state
+        .get_session("agy")
+        .await
+        .unwrap()
+        .pending_prompt
+        .unwrap();
+    assert_eq!(idle.prompt_text, "Waiting for your next message");
+    while events.try_recv().is_ok() {}
+
+    // Redraw in place (cursor up, erase) into the permission menu.
+    output(
+        &app,
+        "agy",
+        "\x1b[5A\x1b[JRun this command?\r\n> 1. Yes, run command\r\n  2. No, cancel\r\n\r\n  \u{2191}/\u{2193} Navigate\r\nesc to cancel\r\n",
+    )
+    .await;
+    let mut raised = None;
+    while let Ok(event) = events.try_recv() {
+        if let AgentEvent::PromptRequired { prompt, .. } = event {
+            raised = Some(prompt);
+        }
+    }
+    let raised = raised.expect("menu raised as a new prompt");
+    assert_eq!(raised.prompt_type, PromptType::Select);
+    assert_eq!(raised.options, vec!["1", "2"]);
+    assert_ne!(raised.id, idle.id);
+}
+
+#[tokio::test]
 async fn test_title_glyphs_ignored_for_other_agents() {
     // Only Claude Code's title glyphs are known; another program's spinner title must not
     // mark it "working" (that would hide its questions).
