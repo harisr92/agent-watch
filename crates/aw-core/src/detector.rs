@@ -1,3 +1,4 @@
+use crate::activity::BRAILLE_SPINNER;
 use crate::models::{PendingPrompt, PromptChoice, PromptType};
 use regex::Regex;
 
@@ -275,10 +276,35 @@ impl PromptDetector {
         })
     }
 
-    /// True while a TUI agent shows its "working" indicator (Claude Code, Codex: "esc to
-    /// interrupt"). A busy agent is never waiting for input.
+    /// True while a TUI agent shows its "working" indicator: "esc to interrupt" (Claude Code,
+    /// Codex) or a braille spinner line near the bottom ("⣾  Generating...", Antigravity CLI).
+    /// A busy agent is never waiting for input.
     pub fn is_busy(screen: &str) -> bool {
+        Self::is_interruptible(screen) || Self::has_spinner_line(screen)
+    }
+
+    /// The agent shows it is running a turn the user can interrupt ("esc to interrupt").
+    /// Unlike a spinner, which some tools keep animating while they wait, this is strong
+    /// enough to retract a pending question.
+    pub fn is_interruptible(screen: &str) -> bool {
         screen.to_lowercase().contains("esc to interrupt")
+    }
+
+    fn has_spinner_line(screen: &str) -> bool {
+        screen
+            .lines()
+            .rev()
+            .filter(|l| !l.trim().is_empty())
+            .take(8)
+            .any(Self::is_spinner_line)
+    }
+
+    /// A braille spinner frame, whitespace, then a status text.
+    fn is_spinner_line(line: &str) -> bool {
+        let mut chars = line.trim_start().chars();
+        chars.next().is_some_and(|c| BRAILLE_SPINNER.contains(&c))
+            && chars.next().is_some_and(char::is_whitespace)
+            && chars.any(char::is_alphanumeric)
     }
 
     fn confirm(session_id: &str, text: &str) -> PendingPrompt {
@@ -875,5 +901,28 @@ mod tests {
         assert!(detector.detect_prompt("s", &output_below).is_none());
         let too_much_below = format!("{bottom_box}\na\nb\nc");
         assert!(detector.detect_prompt("s", &too_much_below).is_none());
+    }
+
+    #[test]
+    fn test_spinner_line_means_busy() {
+        let detector = PromptDetector::new();
+        let busy = [
+            "> Create probe.txt\n⣾  Generating...\n└ Tip: Start your message with ! to run a shell command.\n────────────────────\n>\n────────────────────\nesc to cancel",
+            "Which file?\n⠋ Thinking about it\nPick one:",
+        ];
+        for screen in busy {
+            assert!(PromptDetector::is_busy(screen), "{screen}");
+            assert!(detector.detect_prompt("s", screen).is_none(), "{screen}");
+        }
+        // Near misses: a bare braille glyph, a spinner scrolled far up, "esc to cancel".
+        let not_busy = [
+            "⣿\nProceed? [y/n]",
+            "⣾  Generating...\n1\n2\n3\n4\n5\n6\n7\n8\nProceed? [y/n]",
+            "Run this command?\n> 1. Yes\n  2. No\nesc to cancel\nProceed? [y/n]",
+        ];
+        for screen in not_busy {
+            assert!(!PromptDetector::is_busy(screen), "{screen}");
+            assert!(detector.detect_prompt("s", screen).is_some(), "{screen}");
+        }
     }
 }

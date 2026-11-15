@@ -133,14 +133,15 @@ impl AppState {
             // Only ever refine a pending prompt, never drop it: spinners or screen redraws
             // while the agent waits must not make a real question vanish. The exception is
             // an idle chat box (it stays drawn while idle, so once it is gone the user has
-            // answered from the terminal) and a busy agent, which is not waiting at all.
+            // answered from the terminal) and an agent that says it is working (title, or
+            // "esc to interrupt"). A spinner alone only blocks new prompts, see `busy`.
             let Some(mut prompt) = detected else {
                 let was_chat_input = active
                     .session
                     .pending_prompt
                     .as_ref()
                     .is_some_and(|p| p.prompt_text == CHAT_INPUT_PROMPT);
-                if was_chat_input || busy {
+                if was_chat_input || title_working || PromptDetector::is_interruptible(&tail_text) {
                     active.session.status = AgentStatus::Running;
                     active.session.pending_prompt = None;
                     active.prompt_auto_detected = false;

@@ -15,7 +15,7 @@ use crate::models::AgentActivity;
 
 /// Title glyphs drawn while the agent works: half-circle and braille spinners.
 const WORKING_GLYPHS: &[char] = &['◐', '◓', '◑', '◒'];
-const BRAILLE_SPINNER: std::ops::RangeInclusive<char> = '\u{2801}'..='\u{28FF}';
+pub(crate) const BRAILLE_SPINNER: std::ops::RangeInclusive<char> = '\u{2801}'..='\u{28FF}';
 /// Title glyphs drawn once the agent has stopped.
 const STOPPED_GLYPHS: &[char] = &['✳'];
 
