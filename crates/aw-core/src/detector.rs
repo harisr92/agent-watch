@@ -232,17 +232,22 @@ impl PromptDetector {
         None
     }
 
-    /// Claude Code (and similar TUIs) keep an input box on screen, framed by horizontal rules:
+    /// Claude Code (and similar TUIs) keep an input box at the bottom of the screen, framed by
+    /// horizontal rules, with at most a few status lines below it:
     ///
     /// ```text
     /// ────────────────────
     /// ❯ Try "fix the bug"
     /// ────────────────────
+    /// ⏵⏵ auto mode on
     /// ```
     ///
-    /// The box stays visible while the agent works (for typing ahead), so it only counts as
-    /// waiting when no busy indicator is on screen (checked by the caller).
+    /// Only a box at the bottom counts: Antigravity CLI echoes each message as `> message`
+    /// between rules in its transcript, which looks the same higher up. The box also stays
+    /// visible while the agent works (for typing ahead), so it only counts as waiting when no
+    /// busy indicator is on screen (checked by the caller).
     fn has_idle_chat_box(screen: &str) -> bool {
+        const MAX_LINES_BELOW: usize = 3;
         let is_rule = |l: &str| {
             let t = l.trim();
             // Tolerate a stray U+FFFD from a character mangled by a split read.
@@ -254,10 +259,19 @@ impl PromptDetector {
             let Some(input) = lines.get(top + 1).map(|l| l.trim_start()) else {
                 return false;
             };
+            if !is_rule(lines[top]) || !(input.starts_with('❯') || input.starts_with('>')) {
+                return false;
+            }
             // A long draft wraps onto more lines before the closing rule.
-            is_rule(lines[top])
-                && (input.starts_with('❯') || input.starts_with('>'))
-                && lines[top + 2..].iter().take(10).any(|l| is_rule(l))
+            let Some(bottom) = (top + 2..lines.len().min(top + 12)).find(|&i| is_rule(lines[i]))
+            else {
+                return false;
+            };
+            lines[bottom + 1..]
+                .iter()
+                .filter(|l| !l.trim().is_empty())
+                .count()
+                <= MAX_LINES_BELOW
         })
     }
 
@@ -827,5 +841,39 @@ mod tests {
         ] {
             assert_eq!(PromptDetector::is_busy(screen), busy, "{screen:?}");
         }
+    }
+
+    /// Antigravity CLI's transcript: each message is echoed as `> message` between rules.
+    const AGY_TRANSCRIPT: &str = "  Antigravity CLI 1.5.9\n────────────────────────────────────────\n> Run this shell command: echo probe\n\n● Ran (echo probe) (ctrl+o to expand)\n\nCommand\n────────────────────────────────────────";
+    const AGY_FOOTER: &str =
+        "esc to cancel                                  accept-edits · Gemini 3.8 Flash · high";
+
+    #[test]
+    fn test_antigravity_permission_menu_below_transcript() {
+        let detector = PromptDetector::new();
+        let screen = format!(
+            "{AGY_TRANSCRIPT}\n\nRequesting permission for:\n   echo probe\n\nRun this command?\n> 1. Yes, run command\n  2. Yes, and always allow in this conversation\n  3. Yes, and always allow (Persist to settings.json)\n  4. No, cancel\n\n  ↑/↓ Navigate · tab Amend · ctrl+g edit/expand command\n{AGY_FOOTER}"
+        );
+        let p = detector.detect_prompt("s", &screen).expect("agy menu");
+        assert_eq!(p.prompt_type, PromptType::Select);
+        assert_eq!(p.options, vec!["1", "2", "3", "4"]);
+        assert_eq!(labels(&p)[0], "Yes, run command");
+        assert!(!p.press_enter);
+    }
+
+    #[test]
+    fn test_idle_box_must_be_at_the_bottom() {
+        let detector = PromptDetector::new();
+        let bottom_box = "────────────────────────────────────────\n>\n────────────────────────────────────────\n? for shortcuts              accept-edits · Gemini 3.8 Flash · high";
+        // Positive: the box at the bottom with a footer line.
+        let idle = format!("{AGY_TRANSCRIPT}\n\n● Done.\n{bottom_box}");
+        let p = detector.detect_prompt("s", &idle).expect("idle agy box");
+        assert_eq!(p.prompt_text, CHAT_INPUT_PROMPT);
+
+        // Near misses: a transcript echo mid-screen with output below it is not an input box.
+        let output_below = format!("{AGY_TRANSCRIPT}\nline 1\nline 2\nline 3\nline 4\nDone.");
+        assert!(detector.detect_prompt("s", &output_below).is_none());
+        let too_much_below = format!("{bottom_box}\na\nb\nc");
+        assert!(detector.detect_prompt("s", &too_much_below).is_none());
     }
 }
