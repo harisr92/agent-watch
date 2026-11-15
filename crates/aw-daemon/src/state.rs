@@ -57,6 +57,8 @@ impl AppState {
             started_at: now,
             updated_at: now,
             recent_output: Vec::new(),
+            activity: None,
+            task_title: None,
         };
 
         let active = ActiveSession {

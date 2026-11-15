@@ -1,3 +1,4 @@
+pub mod activity;
 pub mod buffer;
 pub mod detector;
 pub mod models;

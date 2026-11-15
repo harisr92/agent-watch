@@ -11,6 +11,18 @@ pub enum AgentStatus {
     Failed,
 }
 
+/// What the agent is doing within a session, as a terminal tab header shows it. Known only
+/// for agents that report it (see `activity`); `None` otherwise.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentActivity {
+    Working,
+    /// Stopped on a question the user has to answer.
+    Waiting,
+    /// Finished its turn; nothing to answer.
+    Done,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PromptType {
@@ -86,6 +98,11 @@ pub struct AgentSession {
     pub started_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub recent_output: Vec<String>,
+    #[serde(default)]
+    pub activity: Option<AgentActivity>,
+    /// Task name the agent reports in its terminal title, e.g. "Fix login bug".
+    #[serde(default)]
+    pub task_title: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
