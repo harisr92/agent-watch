@@ -71,7 +71,6 @@ impl PromptDetector {
                 r"(?i)enter your choice:\s*$",
                 r"(?i)provide input:\s*$",
                 r"(?i)input:\s*$",
-                r"(?i)>\s*$",
                 r"(?i)\?\s*>\s*$",
                 r"(?i)prompt:\s*$",
                 r"(?i)query:\s*$",
@@ -204,10 +203,11 @@ impl PromptDetector {
         }
 
         // 7. Freeform text input
-        if self
-            .text_prompt_regexes
-            .iter()
-            .any(|re| re.is_match(last_line))
+        if Self::is_angle_prompt(last_line)
+            || self
+                .text_prompt_regexes
+                .iter()
+                .any(|re| re.is_match(last_line))
         {
             return Some(PendingPrompt::new(
                 session_id,
@@ -307,6 +307,17 @@ impl PromptDetector {
             && chars.any(char::is_alphanumeric)
     }
 
+    /// A REPL-style prompt ending in '>' ("mysql>", "> ", "Next? >"), but not code or markup
+    /// that happens to end in '>' ("</div>", "Vec<String>", "a =>").
+    fn is_angle_prompt(line: &str) -> bool {
+        let Some(prefix) = line.trim_end().strip_suffix('>') else {
+            return false;
+        };
+        prefix.chars().count() <= 40
+            && !prefix.contains(['<', '>', '=', '"', '\'', '`'])
+            && !prefix.ends_with('-')
+    }
+
     fn confirm(session_id: &str, text: &str) -> PendingPrompt {
         PendingPrompt::new(
             session_id,
@@ -318,7 +329,7 @@ impl PromptDetector {
 
     fn looks_like_prompt_line(line: &str) -> bool {
         let t = line.trim_end();
-        t.ends_with('?') || t.ends_with(':') || t.ends_with('>')
+        t.ends_with('?') || t.ends_with(':') || Self::is_angle_prompt(t)
     }
 
     fn parse_option_line(&self, line: &str) -> Option<OptionLine> {
@@ -923,6 +934,31 @@ mod tests {
         for screen in not_busy {
             assert!(!PromptDetector::is_busy(screen), "{screen}");
             assert!(detector.detect_prompt("s", screen).is_some(), "{screen}");
+        }
+    }
+
+    #[test]
+    fn test_angle_prompts_versus_code_ending_in_angle_bracket() {
+        let detector = PromptDetector::new();
+        for line in [
+            "mysql> ",
+            "> ",
+            "(Pdb) >",
+            "What should I search for next? > ",
+        ] {
+            let p = detector.detect_prompt("s", line).expect(line);
+            assert_eq!(p.prompt_type, PromptType::Text, "{line}");
+        }
+        for line in [
+            "</div>",
+            "    let names: Vec<String>",
+            "fn parse() -> Result<Title>",
+            "match x { a =>",
+            "a.b ->",
+            "\"quoted\">",
+        ] {
+            let p = detector.detect_prompt("s", line);
+            assert!(p.is_none(), "{line:?} detected as {p:?}");
         }
     }
 }
