@@ -1,13 +1,16 @@
 use anyhow::{Context, Result};
 use aw_core::models::{AgentEvent, RegisterSessionRequest};
 use crossterm::terminal::{disable_raw_mode, enable_raw_mode, size};
-use futures_util::StreamExt;
+use futures_util::{Stream, StreamExt};
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use std::io::{Read, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+use tokio::signal::unix::{signal, SignalKind};
 use tokio::sync::mpsc;
+use tokio::sync::mpsc::error::TrySendError;
 use tokio_tungstenite::connect_async;
+use tokio_tungstenite::tungstenite::Message;
 use tracing::{info, warn};
 
 pub struct PtyRunnerConfig {
@@ -68,17 +71,96 @@ fn take_complete_utf8(buf: &mut Vec<u8>) -> String {
     text
 }
 
+/// Upper bound on PTY output held back while the daemon forwarder is busy. Only the tail
+/// matters to prompt detection, so older text is dropped first.
+const DAEMON_BACKLOG_CAP: usize = 64 * 1024;
+
+/// Puts the controlling terminal in raw mode for its lifetime, restoring it on drop, which
+/// also covers early returns and panics.
+struct RawModeGuard;
+
+impl RawModeGuard {
+    fn enable() -> Self {
+        let _ = enable_raw_mode();
+        RawModeGuard
+    }
+}
+
+impl Drop for RawModeGuard {
+    fn drop(&mut self) {
+        let _ = disable_raw_mode();
+    }
+}
+
+fn pty_size(cols: u16, rows: u16) -> PtySize {
+    PtySize {
+        rows,
+        cols,
+        pixel_width: 0,
+        pixel_height: 0,
+    }
+}
+
+/// Appends `text` to `backlog`, keeping at most the newest `cap` bytes, cut on a char boundary.
+fn push_capped(backlog: &mut String, text: &str, cap: usize) {
+    backlog.push_str(text);
+    if backlog.len() > cap {
+        let mut cut = backlog.len() - cap;
+        while !backlog.is_char_boundary(cut) {
+            cut += 1;
+        }
+        backlog.drain(..cut);
+    }
+}
+
+/// Hands `text` (plus anything held back earlier) to the daemon forwarder without blocking.
+/// When the channel is full the text stays in `backlog` for the next attempt, so terminal
+/// output never waits on HTTP requests to the daemon.
+fn queue_for_daemon(tx: &mpsc::Sender<String>, backlog: &mut String, text: &str, cap: usize) {
+    push_capped(backlog, text, cap);
+    if backlog.is_empty() {
+        return;
+    }
+    match tx.try_send(std::mem::take(backlog)) {
+        Ok(()) => {}
+        Err(TrySendError::Full(pending)) => *backlog = pending,
+        Err(TrySendError::Closed(_)) => {}
+    }
+}
+
+/// Forwards inputs resolved from the menu bar for `session_id` until the stream ends, errors,
+/// or the receiver goes away.
+async fn forward_remote_inputs<S, E>(
+    mut stream: S,
+    session_id: &str,
+    tx: &mpsc::Sender<(String, bool)>,
+) where
+    S: Stream<Item = Result<Message, E>> + Unpin,
+{
+    while let Some(Ok(msg)) = stream.next().await {
+        let Message::Text(txt) = msg else {
+            continue;
+        };
+        if let Ok(AgentEvent::PromptResolved {
+            session_id: target,
+            input,
+            press_enter,
+            ..
+        }) = serde_json::from_str::<AgentEvent>(&txt)
+        {
+            if target == session_id && tx.send((input, press_enter)).await.is_err() {
+                break;
+            }
+        }
+    }
+}
+
 pub async fn run_with_pty(config: PtyRunnerConfig) -> Result<i32> {
     let pty_system = native_pty_system();
 
     let (cols, rows) = size().unwrap_or((80, 24));
     let pair = pty_system
-        .openpty(PtySize {
-            rows,
-            cols,
-            pixel_width: 0,
-            pixel_height: 0,
-        })
+        .openpty(pty_size(cols, rows))
         .context("Failed to allocate PTY")?;
 
     let mut cmd = CommandBuilder::new(&config.command);
@@ -117,6 +199,10 @@ pub async fn run_with_pty(config: PtyRunnerConfig) -> Result<i32> {
         false
     };
 
+    // Raw mode must be on before the child starts: agents query the terminal at startup, and
+    // in cooked mode the replies get echoed on screen and held until a newline.
+    let _raw_mode = RawModeGuard::enable();
+
     let mut child = pair
         .slave
         .spawn_command(cmd)
@@ -133,8 +219,19 @@ pub async fn run_with_pty(config: PtyRunnerConfig) -> Result<i32> {
         .context("Failed to get PTY writer")?;
     let pty_writer_arc = Arc::new(Mutex::new(pty_writer));
 
-    // Enable raw mode on terminal for transparent keystrokes
-    let _ = enable_raw_mode();
+    // Forward terminal resizes so the agent redraws at the real width.
+    let master = pair.master;
+    tokio::spawn(async move {
+        let Ok(mut winch) = signal(SignalKind::window_change()) else {
+            return;
+        };
+        while winch.recv().await.is_some() {
+            if let Ok((cols, rows)) = size() {
+                let _ = master.resize(pty_size(cols, rows));
+            }
+        }
+    });
+
     let is_running = Arc::new(AtomicBool::new(true));
 
     // Channel for remote inputs (from daemon / menu bar)
@@ -148,28 +245,11 @@ pub async fn run_with_pty(config: PtyRunnerConfig) -> Result<i32> {
         let ws_url = config.ws_url.clone();
         let target_session_id = config.session_id.clone();
         let input_tx_clone = input_tx.clone();
-        let is_running_clone = is_running.clone();
 
         tokio::spawn(async move {
             if let Ok((ws_stream, _)) = connect_async(&ws_url).await {
-                let (_, mut read) = ws_stream.split();
-                while is_running_clone.load(Ordering::Relaxed) {
-                    if let Some(Ok(tokio_tungstenite::tungstenite::Message::Text(txt))) =
-                        read.next().await
-                    {
-                        if let Ok(AgentEvent::PromptResolved {
-                            session_id,
-                            input,
-                            press_enter,
-                            ..
-                        }) = serde_json::from_str::<AgentEvent>(&txt)
-                        {
-                            if session_id == target_session_id {
-                                let _ = input_tx_clone.send((input, press_enter)).await;
-                            }
-                        }
-                    }
-                }
+                let (_, read) = ws_stream.split();
+                forward_remote_inputs(read, &target_session_id, &input_tx_clone).await;
             }
         });
 
@@ -177,20 +257,23 @@ pub async fn run_with_pty(config: PtyRunnerConfig) -> Result<i32> {
         let daemon_url = config.daemon_url.clone();
         let session_id = config.session_id.clone();
         let client_clone = client.clone();
-        let is_running_clone = is_running.clone();
 
         tokio::spawn(async move {
-            while is_running_clone.load(Ordering::Relaxed) {
-                if let Some(chunk) = output_rx.recv().await {
-                    let url = format!("{}/api/v1/sessions/{}/output", daemon_url, session_id);
-                    let _ = client_clone
-                        .post(&url)
-                        .json(&serde_json::json!({ "chunk": chunk }))
-                        .send()
-                        .await;
+            let url = format!("{}/api/v1/sessions/{}/output", daemon_url, session_id);
+            while let Some(mut chunk) = output_rx.recv().await {
+                // Batch whatever piled up during the previous request into one POST.
+                while let Ok(more) = output_rx.try_recv() {
+                    chunk.push_str(&more);
                 }
+                let _ = client_clone
+                    .post(&url)
+                    .json(&serde_json::json!({ "chunk": chunk }))
+                    .send()
+                    .await;
             }
         });
+    } else {
+        drop(output_rx);
     }
 
     // Thread: Forward PTY stdout -> terminal stdout AND output_tx
@@ -198,6 +281,7 @@ pub async fn run_with_pty(config: PtyRunnerConfig) -> Result<i32> {
     let _stdout_thread = std::thread::spawn(move || {
         let mut buffer = [0u8; 4096];
         let mut pending_utf8: Vec<u8> = Vec::new();
+        let mut daemon_backlog = String::new();
         let mut stdout = std::io::stdout();
         while is_running_clone.load(Ordering::Relaxed) {
             match pty_reader.read(&mut buffer) {
@@ -210,7 +294,12 @@ pub async fn run_with_pty(config: PtyRunnerConfig) -> Result<i32> {
                     pending_utf8.extend_from_slice(bytes);
                     let text = take_complete_utf8(&mut pending_utf8);
                     if !text.is_empty() {
-                        let _ = output_tx.blocking_send(text);
+                        queue_for_daemon(
+                            &output_tx,
+                            &mut daemon_backlog,
+                            &text,
+                            DAEMON_BACKLOG_CAP,
+                        );
                     }
                 }
                 Err(_) => break,
@@ -242,19 +331,16 @@ pub async fn run_with_pty(config: PtyRunnerConfig) -> Result<i32> {
 
     // Task: Forward inputs from daemon/menu bar -> PTY writer
     let remote_writer_arc = pty_writer_arc.clone();
-    let is_running_clone = is_running.clone();
     tokio::spawn(async move {
-        while is_running_clone.load(Ordering::Relaxed) {
-            if let Some((mut text, press_enter)) = input_rx.recv().await {
-                // Enter is a carriage return on a terminal; the tty turns it into \n for
-                // line-mode programs, and raw-mode TUIs expect \r itself.
-                if press_enter && !text.ends_with(['\r', '\n']) {
-                    text.push('\r');
-                }
-                if let Ok(mut writer) = remote_writer_arc.lock() {
-                    let _ = writer.write_all(text.as_bytes());
-                    let _ = writer.flush();
-                }
+        while let Some((mut text, press_enter)) = input_rx.recv().await {
+            // Enter is a carriage return on a terminal; the tty turns it into \n for
+            // line-mode programs, and raw-mode TUIs expect \r itself.
+            if press_enter && !text.ends_with(['\r', '\n']) {
+                text.push('\r');
+            }
+            if let Ok(mut writer) = remote_writer_arc.lock() {
+                let _ = writer.write_all(text.as_bytes());
+                let _ = writer.flush();
             }
         }
     });
@@ -262,7 +348,7 @@ pub async fn run_with_pty(config: PtyRunnerConfig) -> Result<i32> {
     // Wait for child process to finish
     let status = child.wait()?;
     is_running.store(false, Ordering::Relaxed);
-    let _ = disable_raw_mode();
+    drop(_raw_mode);
 
     let exit_code = if status.success() { 0 } else { 1 };
 
@@ -284,7 +370,84 @@ pub async fn run_with_pty(config: PtyRunnerConfig) -> Result<i32> {
 
 #[cfg(test)]
 mod tests {
-    use super::take_complete_utf8;
+    use super::*;
+    use futures_util::stream;
+
+    fn resolved(session_id: &str, input: &str) -> Message {
+        let event = AgentEvent::PromptResolved {
+            session_id: session_id.to_string(),
+            prompt_id: "p1".to_string(),
+            input: input.to_string(),
+            press_enter: true,
+        };
+        Message::Text(serde_json::to_string(&event).unwrap())
+    }
+
+    #[tokio::test]
+    async fn forward_remote_inputs_stops_when_stream_ends() {
+        let (tx, mut rx) = mpsc::channel(8);
+        let frames: Vec<Result<Message, ()>> = vec![
+            Ok(resolved("other", "no")),
+            Ok(Message::Ping(vec![])),
+            Ok(Message::Text("not json".to_string())),
+            Ok(resolved("me", "yes")),
+        ];
+        forward_remote_inputs(stream::iter(frames), "me", &tx).await;
+        drop(tx);
+        assert_eq!(rx.recv().await, Some(("yes".to_string(), true)));
+        assert_eq!(rx.recv().await, None);
+    }
+
+    #[tokio::test]
+    async fn forward_remote_inputs_stops_on_error() {
+        let (tx, mut rx) = mpsc::channel(8);
+        let frames: Vec<Result<Message, ()>> = vec![Err(()), Ok(resolved("me", "late"))];
+        forward_remote_inputs(stream::iter(frames), "me", &tx).await;
+        drop(tx);
+        assert_eq!(rx.recv().await, None);
+    }
+
+    #[test]
+    fn queue_for_daemon_holds_text_back_while_channel_is_full() {
+        let (tx, mut rx) = mpsc::channel(1);
+        let mut backlog = String::new();
+        queue_for_daemon(&tx, &mut backlog, "a", 1024);
+        assert!(backlog.is_empty());
+        queue_for_daemon(&tx, &mut backlog, "b", 1024);
+        queue_for_daemon(&tx, &mut backlog, "c", 1024);
+        assert_eq!(backlog, "bc");
+        assert_eq!(rx.try_recv().unwrap(), "a");
+        queue_for_daemon(&tx, &mut backlog, "d", 1024);
+        assert!(backlog.is_empty());
+        assert_eq!(rx.try_recv().unwrap(), "bcd");
+    }
+
+    #[test]
+    fn queue_for_daemon_drops_text_when_forwarder_is_gone() {
+        let (tx, rx) = mpsc::channel(1);
+        drop(rx);
+        let mut backlog = String::new();
+        queue_for_daemon(&tx, &mut backlog, "a", 1024);
+        assert!(backlog.is_empty());
+    }
+
+    #[test]
+    fn push_capped_keeps_newest_tail_on_char_boundary() {
+        let mut backlog = String::new();
+        push_capped(&mut backlog, "ab──", 4); // 'a','b', then two 3-byte chars = 8 bytes
+        assert_eq!(backlog, "─");
+        push_capped(&mut backlog, "x", 4);
+        assert_eq!(backlog, "─x");
+    }
+
+    #[test]
+    fn pty_size_maps_columns_and_rows() {
+        let s = pty_size(120, 40);
+        assert_eq!(
+            (s.cols, s.rows, s.pixel_width, s.pixel_height),
+            (120, 40, 0, 0)
+        );
+    }
 
     #[test]
     fn split_utf8_character_is_carried_over() {

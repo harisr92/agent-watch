@@ -81,7 +81,11 @@ enum Commands {
 async fn main() -> Result<()> {
     // Initialize tracing (suppress debug unless RUST_LOG is set)
     let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("warn"));
-    tracing_subscriber::fmt().with_env_filter(filter).init();
+    // Logs go to stderr so they never mix with the PTY passthrough on stdout.
+    tracing_subscriber::fmt()
+        .with_env_filter(filter)
+        .with_writer(std::io::stderr)
+        .init();
 
     let cli = Cli::parse();
 
