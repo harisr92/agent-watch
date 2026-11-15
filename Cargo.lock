@@ -132,17 +132,11 @@ dependencies = [
 name = "aw-core"
 version = "0.1.0"
 dependencies = [
- "anyhow",
  "chrono",
  "dirs",
- "portable-pty",
  "regex",
  "serde",
- "serde_json",
  "strip-ansi-escapes",
- "thiserror",
- "tokio",
- "tracing",
  "uuid",
  "vt100",
 ]
@@ -164,7 +158,6 @@ dependencies = [
  "tower",
  "tower-http 0.5.2",
  "tracing",
- "tracing-subscriber",
  "uuid",
 ]
 
