@@ -920,3 +920,84 @@ async fn test_title_glyphs_ignored_for_other_agents() {
     assert_eq!(s.activity, None);
     assert_eq!(s.status, AgentStatus::WaitingForInput);
 }
+
+#[tokio::test]
+async fn test_dismiss_prompt_sends_nothing_to_the_agent() {
+    let state = AppState::new();
+    let mut events = state.events_tx.subscribe();
+    let (pty_tx, mut pty_rx) = tokio::sync::mpsc::channel(8);
+    state
+        .register_session(
+            RegisterSessionRequest {
+                id: "dis".into(),
+                name: "agent".into(),
+                command: "agent".into(),
+                args: vec![],
+                cwd: "/tmp".into(),
+                pid: None,
+            },
+            Some(pty_tx),
+        )
+        .await;
+    let app = create_router(state.clone());
+    output(&app, "dis", "Overwrite existing file? [y/n] ").await;
+    let prompt = state
+        .get_session("dis")
+        .await
+        .unwrap()
+        .pending_prompt
+        .unwrap();
+    while events.try_recv().is_ok() {}
+
+    let (status, _) = post_json(&app, "/api/v1/sessions/dis/dismiss", json!({})).await;
+    assert_eq!(status, StatusCode::OK);
+
+    let s = state.get_session("dis").await.unwrap();
+    assert_eq!(s.status, AgentStatus::Running);
+    assert!(s.pending_prompt.is_none());
+    assert!(
+        pty_rx.try_recv().is_err(),
+        "nothing may be typed into the agent"
+    );
+    let mut dismissed = false;
+    while let Ok(event) = events.try_recv() {
+        match event {
+            AgentEvent::PromptDismissed { prompt_id, .. } => {
+                assert_eq!(prompt_id, prompt.id);
+                dismissed = true;
+            }
+            AgentEvent::PromptResolved { .. } => panic!("PromptResolved reaches the PTY runner"),
+            _ => {}
+        }
+    }
+    assert!(dismissed);
+
+    // The same question redrawn is not raised again; a different one is.
+    output(&app, "dis", "\rOverwrite existing file? [y/n] ").await;
+    assert!(state
+        .get_session("dis")
+        .await
+        .unwrap()
+        .pending_prompt
+        .is_none());
+    output(&app, "dis", "\r\nDelete backup too? [y/n] ").await;
+    let next = state
+        .get_session("dis")
+        .await
+        .unwrap()
+        .pending_prompt
+        .expect("new prompt");
+    assert_eq!(next.prompt_text, "Delete backup too? [y/n]");
+}
+
+#[tokio::test]
+async fn test_dismiss_unknown_session_is_not_found_and_without_prompt_is_ok() {
+    let state = AppState::new();
+    let app = create_router(state.clone());
+    let (status, _) = post_json(&app, "/api/v1/sessions/nope/dismiss", json!({})).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    register(&app, "idle").await;
+    let (status, _) = post_json(&app, "/api/v1/sessions/idle/dismiss", json!({})).await;
+    assert_eq!(status, StatusCode::OK);
+}

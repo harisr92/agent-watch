@@ -301,6 +301,33 @@ impl AppState {
         false
     }
 
+    /// Drops the pending prompt without sending anything to the agent: the question is only
+    /// hidden from Agent Watch. It is not raised again while it stays on screen, and an MCP
+    /// call waiting on it keeps waiting. Returns false for an unknown session.
+    pub async fn dismiss_prompt(&self, session_id: &str) -> bool {
+        let mut lock = self.sessions.write().await;
+        let Some(active) = lock.get_mut(session_id) else {
+            return false;
+        };
+        let Some(prompt) = active.session.pending_prompt.take() else {
+            return true;
+        };
+        active.last_resolved_prompt_text = Some(prompt.prompt_text);
+        active.prompt_auto_detected = false;
+        active.session.status = AgentStatus::Running;
+        active.session.updated_at = Utc::now();
+
+        let _ = self.events_tx.send(AgentEvent::PromptDismissed {
+            session_id: session_id.to_string(),
+            prompt_id: prompt.id,
+        });
+        let _ = self
+            .events_tx
+            .send(AgentEvent::SessionUpdated(active.session.clone()));
+        info!("Prompt dismissed for session {}", session_id);
+        true
+    }
+
     pub async fn register_prompt(
         &self,
         session_id: &str,

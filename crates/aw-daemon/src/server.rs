@@ -31,6 +31,7 @@ pub fn create_router(state: AppState) -> Router {
         .route("/api/v1/sessions/:id/output", post(append_output))
         .route("/api/v1/sessions/:id/prompt", post(register_prompt))
         .route("/api/v1/sessions/:id/input", post(submit_input))
+        .route("/api/v1/sessions/:id/dismiss", post(dismiss_prompt))
         .route("/api/v1/sessions/:id/terminate", post(terminate_session))
         .route("/api/v1/events", get(ws_handler))
         .route("/mcp", post(mcp_handler))
@@ -160,6 +161,14 @@ async fn submit_input(
     Json(req): Json<UserInputRequest>,
 ) -> StatusCode {
     if state.submit_input(&id, req).await {
+        StatusCode::OK
+    } else {
+        StatusCode::NOT_FOUND
+    }
+}
+
+async fn dismiss_prompt(State(state): State<AppState>, Path(id): Path<String>) -> StatusCode {
+    if state.dismiss_prompt(&id).await {
         StatusCode::OK
     } else {
         StatusCode::NOT_FOUND
