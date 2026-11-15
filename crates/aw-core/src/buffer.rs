@@ -1,15 +1,19 @@
 use std::collections::VecDeque;
 
-/// Size of the virtual terminal used to render full-screen TUIs. It only needs to be at least
-/// as large as the real terminal: TUIs position the cursor absolutely, so extra room stays blank.
+/// Size of the virtual terminal used to render the screen. It only needs to be at least as
+/// large as the real terminal: TUIs position the cursor absolutely, so extra room stays blank.
 const SCREEN_ROWS: u16 = 100;
 const SCREEN_COLS: u16 = 300;
 
 pub struct RollingOutputBuffer {
     capacity: usize,
-    /// Full-screen TUIs (Claude Code, etc.) draw on the alternate screen with cursor movement
-    /// instead of newlines, which a line buffer cannot follow. This emulator renders them.
+    /// TUIs redraw with cursor movement instead of newlines, both on the alternate screen
+    /// (Claude Code) and inline on the normal screen (Antigravity CLI). A line buffer cannot
+    /// follow that, so this emulator renders what the user actually sees.
     screen: vt100::Parser,
+    /// A '\r' has been seen. Until then the input is plain line-oriented text (not from a PTY,
+    /// which turns "\n" into "\r\n"), so the emulator gets that translation applied.
+    seen_cr: bool,
     lines: VecDeque<String>,
     current_line: String,
     /// A '\r' was the last character seen. It is either half of a "\r\n" line ending
@@ -22,6 +26,7 @@ impl RollingOutputBuffer {
         Self {
             capacity,
             screen: vt100::Parser::new(SCREEN_ROWS, SCREEN_COLS, 0),
+            seen_cr: false,
             lines: VecDeque::with_capacity(capacity),
             current_line: String::new(),
             pending_cr: false,
@@ -29,7 +34,12 @@ impl RollingOutputBuffer {
     }
 
     pub fn append(&mut self, text: &str) {
-        self.screen.process(text.as_bytes());
+        self.seen_cr |= text.contains('\r');
+        if self.seen_cr {
+            self.screen.process(text.as_bytes());
+        } else {
+            self.screen.process(text.replace('\n', "\r\n").as_bytes());
+        }
         for ch in text.chars() {
             match ch {
                 '\n' => {
@@ -68,13 +78,9 @@ impl RollingOutputBuffer {
         }
     }
 
-    /// The last `n` lines as the user sees them: the rendered screen for full-screen TUIs,
-    /// otherwise the line-oriented output.
+    /// The last `n` non-blank-trailing rows of the rendered screen, as the user sees them.
     pub fn visible_tail(&self, n: usize) -> Vec<String> {
         let screen = self.screen.screen();
-        if !screen.alternate_screen() {
-            return self.get_tail(n);
-        }
         let rows: Vec<String> = screen
             .rows(0, SCREEN_COLS)
             .map(|r| r.trim_end().to_string())
@@ -143,10 +149,20 @@ mod tests {
     }
 
     #[test]
-    fn test_visible_tail_without_alternate_screen_uses_lines() {
+    fn test_visible_tail_renders_normal_screen() {
         let mut buf = RollingOutputBuffer::new(5);
+        // Plain text without carriage returns reads as lines.
         buf.append("a\nb\nprompt> ");
-        assert_eq!(buf.visible_tail(2), vec!["b", "prompt> "]);
+        assert_eq!(buf.visible_tail(2), vec!["b", "prompt>"]);
+
+        // Antigravity style: an inline TUI erases its spinner with cursor-up and redraws.
+        let mut buf = RollingOutputBuffer::new(5);
+        buf.append("> do it\r\n\u{28fe}  Generating...\r\n> \r\n");
+        buf.append("\x1b[2A\x1b[JRun this command?\r\n> 1. Yes\r\n  2. No\r\n");
+        assert_eq!(
+            buf.visible_tail(10),
+            vec!["> do it", "Run this command?", "> 1. Yes", "  2. No"]
+        );
     }
 
     #[test]
