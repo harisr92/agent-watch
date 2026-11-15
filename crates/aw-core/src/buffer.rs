@@ -1,8 +1,15 @@
 use std::collections::VecDeque;
 
-#[derive(Debug, Clone)]
+/// Size of the virtual terminal used to render full-screen TUIs. It only needs to be at least
+/// as large as the real terminal: TUIs position the cursor absolutely, so extra room stays blank.
+const SCREEN_ROWS: u16 = 100;
+const SCREEN_COLS: u16 = 300;
+
 pub struct RollingOutputBuffer {
     capacity: usize,
+    /// Full-screen TUIs (Claude Code, etc.) draw on the alternate screen with cursor movement
+    /// instead of newlines, which a line buffer cannot follow. This emulator renders them.
+    screen: vt100::Parser,
     lines: VecDeque<String>,
     current_line: String,
     /// A '\r' was the last character seen. It is either half of a "\r\n" line ending
@@ -14,6 +21,7 @@ impl RollingOutputBuffer {
     pub fn new(capacity: usize) -> Self {
         Self {
             capacity,
+            screen: vt100::Parser::new(SCREEN_ROWS, SCREEN_COLS, 0),
             lines: VecDeque::with_capacity(capacity),
             current_line: String::new(),
             pending_cr: false,
@@ -21,6 +29,7 @@ impl RollingOutputBuffer {
     }
 
     pub fn append(&mut self, text: &str) {
+        self.screen.process(text.as_bytes());
         for ch in text.chars() {
             match ch {
                 '\n' => {
@@ -59,6 +68,24 @@ impl RollingOutputBuffer {
         }
     }
 
+    /// The last `n` lines as the user sees them: the rendered screen for full-screen TUIs,
+    /// otherwise the line-oriented output.
+    pub fn visible_tail(&self, n: usize) -> Vec<String> {
+        let screen = self.screen.screen();
+        if !screen.alternate_screen() {
+            return self.get_tail(n);
+        }
+        let rows: Vec<String> = screen
+            .rows(0, SCREEN_COLS)
+            .map(|r| r.trim_end().to_string())
+            .collect();
+        let end = rows
+            .iter()
+            .rposition(|r| !r.is_empty())
+            .map_or(0, |i| i + 1);
+        rows[end.saturating_sub(n)..end].to_vec()
+    }
+
     pub fn get_current_line(&self) -> &str {
         &self.current_line
     }
@@ -94,6 +121,27 @@ mod tests {
         let mut buf = RollingOutputBuffer::new(5);
         buf.append("Progress 10%\rProgress 90%\rDone\n");
         assert_eq!(buf.get_lines(), vec!["Done"]);
+    }
+
+    #[test]
+    fn test_alternate_screen_is_rendered() {
+        let mut buf = RollingOutputBuffer::new(5);
+        // Claude Code style: alternate screen, rows reached with "\r" + cursor-down, no "\n".
+        buf.append(
+            "\x1b[?1049h\x1b[2J\x1b[H\r\x1b[1BHeader\r\x1b[1B\u{2500}\u{2500}\r\x1b[1B\u{276f} hi",
+        );
+        assert_eq!(
+            buf.visible_tail(5),
+            vec!["", "Header", "\u{2500}\u{2500}", "\u{276f} hi"]
+        );
+        assert_eq!(buf.visible_tail(2), vec!["\u{2500}\u{2500}", "\u{276f} hi"]);
+    }
+
+    #[test]
+    fn test_visible_tail_without_alternate_screen_uses_lines() {
+        let mut buf = RollingOutputBuffer::new(5);
+        buf.append("a\nb\nprompt> ");
+        assert_eq!(buf.visible_tail(2), vec!["b", "prompt> "]);
     }
 
     #[test]

@@ -10,6 +10,7 @@ serde_json = { workspace = true }
 portable-pty = { workspace = true }
 regex = { workspace = true }
 strip-ansi-escapes = { workspace = true }
+vt100 = { workspace = true }
 uuid = { workspace = true }
 chrono = { workspace = true }
 tracing = { workspace = true }

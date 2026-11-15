@@ -1,5 +1,5 @@
 use aw_core::buffer::RollingOutputBuffer;
-use aw_core::detector::PromptDetector;
+use aw_core::detector::{PromptDetector, CHAT_INPUT_PROMPT};
 use aw_core::models::{
     AgentEvent, AgentSession, AgentStatus, PendingPrompt, PromptChoice, PromptType,
     RegisterSessionRequest, UserInputRequest,
@@ -85,7 +85,7 @@ impl AppState {
         if let Some(active) = lock.get_mut(session_id) {
             active.buffer.append(chunk);
             active.session.updated_at = Utc::now();
-            active.session.recent_output = active.buffer.get_tail(30);
+            active.session.recent_output = active.buffer.visible_tail(30);
 
             // Broadcast delta
             let _ = self.events_tx.send(AgentEvent::OutputDelta {
@@ -101,13 +101,30 @@ impl AppState {
                 return None;
             }
 
-            let tail_text = active.buffer.get_tail(30).join("\n");
+            let tail_text = active.buffer.visible_tail(30).join("\n");
             let detected = self.detector.detect_prompt(session_id, &tail_text);
 
             if waiting {
                 // Only ever refine a pending prompt, never drop it: spinners or screen redraws
-                // while the agent waits must not make a real question vanish.
-                let mut prompt = detected?;
+                // while the agent waits must not make a real question vanish. The exception is
+                // an idle chat box: it stays drawn while idle, so once it is gone or busy, the
+                // user has answered from the terminal.
+                let Some(mut prompt) = detected else {
+                    let was_chat_input = active
+                        .session
+                        .pending_prompt
+                        .as_ref()
+                        .is_some_and(|p| p.prompt_text == CHAT_INPUT_PROMPT);
+                    if was_chat_input {
+                        active.session.status = AgentStatus::Running;
+                        active.session.pending_prompt = None;
+                        active.prompt_auto_detected = false;
+                        let _ = self
+                            .events_tx
+                            .send(AgentEvent::SessionUpdated(active.session.clone()));
+                    }
+                    return None;
+                };
                 let current = active.session.pending_prompt.as_ref();
                 let unchanged = current.is_some_and(|c| {
                     c.prompt_text == prompt.prompt_text

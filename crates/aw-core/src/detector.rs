@@ -6,6 +6,9 @@ const CURSOR_GLYPHS: &[char] = &['❯', '›', '▸', '➤', '▶', '→'];
 const ARROW_UP: &str = "\x1b[A";
 const ARROW_DOWN: &str = "\x1b[B";
 
+/// Prompt text for an idle chat input box (e.g. Claude Code's `❯` prompt).
+pub const CHAT_INPUT_PROMPT: &str = "Waiting for your next message";
+
 pub struct PromptDetector {
     confirm_regexes: Vec<Regex>,
     choice_regexes: Vec<Regex>,
@@ -124,6 +127,16 @@ impl PromptDetector {
             .collect();
         let last_line = *lines.last()?;
 
+        // 0. An idle chat input box drawn by a full-screen TUI
+        if Self::has_idle_chat_box(&cleaned) {
+            return Some(PendingPrompt::new(
+                session_id,
+                CHAT_INPUT_PROMPT,
+                PromptType::Text,
+                vec![],
+            ));
+        }
+
         // 1. Multi-line menus (numbered/lettered lists, arrow-key lists)
         if let Some(p) = self.detect_keyed_menu(session_id, &lines, &trimmed_lines) {
             return Some(p);
@@ -211,6 +224,38 @@ impl PromptDetector {
         }
 
         None
+    }
+
+    /// Claude Code (and similar TUIs) keep an input box on screen, framed by horizontal rules:
+    ///
+    /// ```text
+    /// ────────────────────
+    /// ❯ Try "fix the bug"
+    /// ────────────────────
+    /// ```
+    ///
+    /// The box stays visible while the agent works (for typing ahead), so it only counts as
+    /// waiting when no busy indicator ("esc to interrupt") is on screen.
+    fn has_idle_chat_box(screen: &str) -> bool {
+        if screen.to_lowercase().contains("esc to interrupt") {
+            return false;
+        }
+        let is_rule = |l: &str| {
+            let t = l.trim();
+            // Tolerate a stray U+FFFD from a character mangled by a split read.
+            let dashes = t.chars().filter(|&c| c == '─' || c == '━').count();
+            dashes >= 10 && t.chars().all(|c| c == '─' || c == '━' || c == '\u{fffd}')
+        };
+        let lines: Vec<&str> = screen.lines().collect();
+        (0..lines.len()).any(|top| {
+            let Some(input) = lines.get(top + 1).map(|l| l.trim_start()) else {
+                return false;
+            };
+            // A long draft wraps onto more lines before the closing rule.
+            is_rule(lines[top])
+                && (input.starts_with('❯') || input.starts_with('>'))
+                && lines[top + 2..].iter().take(10).any(|l| is_rule(l))
+        })
     }
 
     fn confirm(session_id: &str, text: &str) -> PendingPrompt {
@@ -686,5 +731,40 @@ mod tests {
             let p = detector.detect_prompt("s", sample).expect(sample);
             assert_eq!(p.prompt_type, PromptType::Secret, "sample: {}", sample);
         }
+    }
+
+    /// Real `aw run claude` output at the idle prompt: alternate screen, no newlines.
+    const CLAUDE_IDLE_FRAME: &str = "\x1b[?1049h\x1b[2J\x1b[H\x1b[?2026h\x1b[H\r\x1b[1B ▐▛███▛█\x1b[12GClaude Code\x1b[24Gv2.1.325\r\x1b[1B▝▜█████▛▘\x1b[12GOpus 5.5 · Claude Pro\r\x1b[1B ▘▘ ▝▝ \x1b[12G/private/tmp\r\x1b[60C\x1b[15B◐ medium · /effort\r\x1b[1B────────────────────────────────────────\r\x1b[1B❯\u{a0}Try \"how do I log an error?\"\r\x1b[1B────────────────────────────────────────\r\x1b[2C\x1b[1B⏵⏵ auto mode on (shift+tab to cycle)\x1b[24;1H\x1b[21;3H\x1b[?2026l";
+
+    fn screen_of(raw: &str) -> String {
+        let mut buf = crate::buffer::RollingOutputBuffer::new(150);
+        buf.append(raw);
+        buf.visible_tail(30).join("\n")
+    }
+
+    #[test]
+    fn test_claude_idle_input_box() {
+        let detector = PromptDetector::new();
+        let p = detector
+            .detect_prompt("s", &screen_of(CLAUDE_IDLE_FRAME))
+            .expect("idle Claude prompt");
+        assert_eq!(p.prompt_type, PromptType::Text);
+        assert_eq!(p.prompt_text, CHAT_INPUT_PROMPT);
+        assert!(p.press_enter);
+    }
+
+    #[test]
+    fn test_claude_busy_input_box_is_not_a_prompt() {
+        let detector = PromptDetector::new();
+        let busy = "────────────────────\n✻ Thinking… (12s · esc to interrupt)\n────────────────────\n❯ \n────────────────────\n⏵⏵ auto mode on";
+        assert!(detector.detect_prompt("s", busy).is_none());
+    }
+
+    #[test]
+    fn test_chat_box_with_wrapped_draft() {
+        let detector = PromptDetector::new();
+        let screen = "Done.\n────────────────────\n❯ a long draft that\n  wraps onto a second line\n────────────────────\n? for shortcuts";
+        let p = detector.detect_prompt("s", screen).expect("draft prompt");
+        assert_eq!(p.prompt_text, CHAT_INPUT_PROMPT);
     }
 }

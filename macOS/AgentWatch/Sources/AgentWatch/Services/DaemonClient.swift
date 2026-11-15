@@ -123,7 +123,7 @@ public class DaemonClient: ObservableObject {
                let initialSessions = try? JSONDecoder().decode([AgentSession].self, from: sessionsData) {
                 self.sessions = initialSessions
                 StatusBarController.shared.updateStatusItem()
-                if self.waitingSessions.count > 0 {
+                if self.waitingSessions.contains(where: { $0.pendingPrompt?.isChatInput != true }) {
                     StatusBarController.shared.showPopover()
                 }
                 return
@@ -205,6 +205,9 @@ public class DaemonClient: ObservableObject {
     }
 
     public func handleAgentRequest(session: AgentSession, prompt: PendingPrompt) {
+        // Shown in the list and counted in the badge, but no popover, window raise or notification.
+        if prompt.isChatInput { return }
+
         let wm = WindowManager.shared
 
         if wm.isWindowOpen {

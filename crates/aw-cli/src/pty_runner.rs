@@ -53,6 +53,21 @@ async fn ensure_daemon_running(daemon_url: &str) -> bool {
     false
 }
 
+/// Decodes the complete UTF-8 prefix of `buf`, leaving a character split across PTY reads
+/// in `buf` for the next read instead of mangling it into U+FFFD.
+fn take_complete_utf8(buf: &mut Vec<u8>) -> String {
+    let keep_from = match std::str::from_utf8(buf) {
+        Ok(_) => buf.len(),
+        // Truncated sequence at the end (error_len None): keep it, up to a 3-byte prefix.
+        Err(e) if e.error_len().is_none() && buf.len() - e.valid_up_to() < 4 => e.valid_up_to(),
+        Err(_) => buf.len(),
+    };
+    let rest = buf.split_off(keep_from);
+    let text = String::from_utf8_lossy(buf).into_owned();
+    *buf = rest;
+    text
+}
+
 pub async fn run_with_pty(config: PtyRunnerConfig) -> Result<i32> {
     let pty_system = native_pty_system();
 
@@ -182,6 +197,7 @@ pub async fn run_with_pty(config: PtyRunnerConfig) -> Result<i32> {
     let is_running_clone = is_running.clone();
     let _stdout_thread = std::thread::spawn(move || {
         let mut buffer = [0u8; 4096];
+        let mut pending_utf8: Vec<u8> = Vec::new();
         let mut stdout = std::io::stdout();
         while is_running_clone.load(Ordering::Relaxed) {
             match pty_reader.read(&mut buffer) {
@@ -191,8 +207,11 @@ pub async fn run_with_pty(config: PtyRunnerConfig) -> Result<i32> {
                     let _ = stdout.write_all(bytes);
                     let _ = stdout.flush();
 
-                    let text = String::from_utf8_lossy(bytes).to_string();
-                    let _ = output_tx.blocking_send(text);
+                    pending_utf8.extend_from_slice(bytes);
+                    let text = take_complete_utf8(&mut pending_utf8);
+                    if !text.is_empty() {
+                        let _ = output_tx.blocking_send(text);
+                    }
                 }
                 Err(_) => break,
             }
@@ -261,4 +280,27 @@ pub async fn run_with_pty(config: PtyRunnerConfig) -> Result<i32> {
     }
 
     Ok(exit_code)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::take_complete_utf8;
+
+    #[test]
+    fn split_utf8_character_is_carried_over() {
+        let rule = "──".as_bytes(); // 6 bytes, two 3-byte characters
+        let mut buf = rule[..4].to_vec();
+        assert_eq!(take_complete_utf8(&mut buf), "─");
+        assert_eq!(buf.len(), 1);
+        buf.extend_from_slice(&rule[4..]);
+        assert_eq!(take_complete_utf8(&mut buf), "─");
+        assert!(buf.is_empty());
+    }
+
+    #[test]
+    fn invalid_bytes_are_not_held_back() {
+        let mut buf = vec![b'a', 0xff, b'b'];
+        assert_eq!(take_complete_utf8(&mut buf), "a\u{fffd}b");
+        assert!(buf.is_empty());
+    }
 }

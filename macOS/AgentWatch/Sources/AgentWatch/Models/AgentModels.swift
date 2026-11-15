@@ -75,6 +75,13 @@ public struct PromptChoice: Codable, Hashable {
 }
 
 public struct PendingPrompt: Identifiable, Codable {
+    /// Prompt text the daemon uses for an agent idling at its chat box (Claude Code's `❯`).
+    /// Must match `CHAT_INPUT_PROMPT` in crates/aw-core/src/detector.rs.
+    public static let chatInputText = "Waiting for your next message"
+
+    /// An idle chat box appears after every reply, so it is answerable but should not interrupt.
+    public var isChatInput: Bool { promptText == Self.chatInputText }
+
     public let id: String
     public let sessionId: String
     public let promptText: String
